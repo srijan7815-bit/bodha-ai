@@ -39,6 +39,12 @@ export async function POST(req: NextRequest) {
   if (!admin) {
     return NextResponse.json({ error: 'Firebase is not configured on the server' }, { status: 503 })
   }
+  if (!admin.auth) {
+    return NextResponse.json(
+      { error: 'Firebase sign-in is unavailable on this server. Use email and password instead.' },
+      { status: 503 },
+    )
+  }
 
   try {
     const decoded = await admin.auth.verifyIdToken(token)

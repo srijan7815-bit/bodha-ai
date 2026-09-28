@@ -86,9 +86,10 @@ export class FirebaseStore implements Store {
     // Best effort: mirror the account into Firebase Auth when that service is
     // actually enabled, so the client SDK (and Google sign-in) see the same
     // account. Sign-up must never fail because of it.
-    if (user.password && (await firebaseAuthReady())) {
+    const auth = admin.auth
+    if (user.password && auth && (await firebaseAuthReady())) {
       try {
-        await admin.auth.createUser({ uid: id, email, displayName: user.name, password: user.password })
+        await auth.createUser({ uid: id, email, displayName: user.name, password: user.password })
       } catch (err) {
         console.warn('[store] Firebase Auth mirror skipped:', (err as Error).message)
       }

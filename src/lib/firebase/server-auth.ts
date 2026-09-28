@@ -39,7 +39,7 @@ async function verifyFirebaseToken(token: string): Promise<User | null> {
     console.warn('[auth] Firebase Admin unavailable:', (err as Error).message)
     return null
   })
-  if (!admin) return null
+  if (!admin || !admin.auth) return null
 
   try {
     const decoded = await admin.auth.verifyIdToken(token)

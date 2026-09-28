@@ -21,7 +21,16 @@ import type { Storage } from 'firebase-admin/storage'
 
 export interface AdminServices {
   app: App
-  auth: Auth
+  /**
+   * Null when Firebase Auth cannot be loaded in this runtime.
+   *
+   * firebase-admin 14 pulls in jwks-rsa, which `require()`s the ESM-only
+   * `jose` package from CommonJS — that throws ERR_REQUIRE_ESM on Vercel's
+   * server runtime. Firestore and Storage are unaffected, and the app's own
+   * email/password accounts do not need Auth, so a missing `auth` must never
+   * break the store (it did: every /api/auth request returned 500).
+   */
+  auth: Auth | null
   db: Firestore
   storage: Storage
 }
@@ -92,9 +101,8 @@ export async function getAdmin(): Promise<AdminServices | null> {
   if (initFailure) throw initFailure
 
   try {
-    const [{ initializeApp, getApps, getApp, cert }, { getAuth }, { getFirestore }, { getStorage }] = await Promise.all([
+    const [{ initializeApp, getApps, getApp, cert }, { getFirestore }, { getStorage }] = await Promise.all([
       import('firebase-admin/app'),
-      import('firebase-admin/auth'),
       import('firebase-admin/firestore'),
       import('firebase-admin/storage'),
     ])
@@ -109,7 +117,19 @@ export async function getAdmin(): Promise<AdminServices | null> {
       ? getApp()
       : initializeApp({ credential: cert(credentials), storageBucket })
 
-    cached = { app, auth: getAuth(app), db: getFirestore(app), storage: getStorage(app) }
+    // Loaded separately and defensively — see the note on AdminServices.auth.
+    let auth: Auth | null = null
+    try {
+      const { getAuth } = await import('firebase-admin/auth')
+      auth = getAuth(app)
+    } catch (err) {
+      console.warn(
+        '[firebase-admin] Firebase Auth is unavailable in this runtime; Firestore and Storage still work:',
+        (err as Error).message,
+      )
+    }
+
+    cached = { app, auth, db: getFirestore(app), storage: getStorage(app) }
     return cached
   } catch (err) {
     initFailure = new Error(
@@ -153,7 +173,7 @@ export async function firebaseAuthReady(): Promise<boolean> {
   if (authReady && Date.now() - authReady.checkedAt < TTL_MS) return authReady.value
 
   const admin = await getAdmin().catch(() => null)
-  if (!admin) return false
+  if (!admin || !admin.auth) return false
 
   let value = false
   try {
@@ -181,6 +201,12 @@ export interface AdminHealth {
   admin: 'ok' | 'error' | 'unconfigured'
   /** Whether a real Firestore round trip succeeds. */
   firestore: 'ok' | 'error' | 'skipped'
+  /**
+   * 'ok'          — Authentication answers.
+   * 'disabled'    — enabled module, but the project has no Authentication set up.
+   * 'unavailable' — the Auth module could not even load in this runtime.
+   */
+  auth: 'ok' | 'disabled' | 'unavailable'
   detail?: string
 }
 
@@ -201,22 +227,38 @@ function sanitize(message: string): string {
  */
 export async function adminHealth(): Promise<AdminHealth> {
   if (!isFirebaseAdminConfigured()) {
-    return { configured: false, admin: 'unconfigured', firestore: 'skipped' }
+    return { configured: false, admin: 'unconfigured', firestore: 'skipped', auth: 'unavailable' }
   }
 
   let admin: AdminServices
   try {
     admin = await requireAdmin()
   } catch (err) {
-    return { configured: true, admin: 'error', firestore: 'skipped', detail: sanitize((err as Error).message) }
+    return {
+      configured: true,
+      admin: 'error',
+      firestore: 'skipped',
+      auth: 'unavailable',
+      detail: sanitize((err as Error).message),
+    }
+  }
+
+  let auth: AdminHealth['auth'] = 'unavailable'
+  if (admin.auth) {
+    try {
+      await admin.auth.listUsers(1)
+      auth = 'ok'
+    } catch (err) {
+      auth = (err as { code?: string }).code === 'auth/configuration-not-found' ? 'disabled' : 'unavailable'
+    }
   }
 
   try {
     // A read against a (possibly empty) collection — cheap and side-effect free.
     await admin.db.collection('health').limit(1).get()
-    return { configured: true, admin: 'ok', firestore: 'ok' }
+    return { configured: true, admin: 'ok', firestore: 'ok', auth }
   } catch (err) {
-    return { configured: true, admin: 'ok', firestore: 'error', detail: sanitize((err as Error).message) }
+    return { configured: true, admin: 'ok', firestore: 'error', auth, detail: sanitize((err as Error).message) }
   }
 }
 
