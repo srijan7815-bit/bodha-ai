@@ -1,0 +1,255 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── CSS Variables for BODHA warm palette ─────────────────────────────────
+   Two modes: light (default "paper") and dark ("night") via <html class="dark"> */
+
+:root {
+  --background: #FAF7F2;
+  --foreground: #2B2723;
+  --card: #F1EAE0;
+  --card-foreground: #2B2723;
+  --popover: #F1EAE0;
+  --popover-foreground: #2B2723;
+  --primary: #C1633B;
+  --primary-foreground: #FAF7F2;
+  --secondary: #E8DDD1;
+  --secondary-foreground: #2B2723;
+  --muted: #E8DDD1;
+  --muted-foreground: #6B5F53;
+  --accent: #E8DDD1;
+  --accent-foreground: #2B2723;
+  --destructive: #C14E3B;
+  --destructive-foreground: #FAF7F2;
+  --border: #D4C9BB;
+  --input: #D4C9BB;
+  --ring: #C1633B;
+  --radius: 0.75rem;
+  --code-bg: #2B2723;
+  --code-ink: #F1EAE0;
+}
+
+.dark {
+  --background: #1A1714;
+  --foreground: #F1EAE0;
+  --card: #24201C;
+  --card-foreground: #F1EAE0;
+  --popover: #24201C;
+  --popover-foreground: #F1EAE0;
+  --primary: #D48A6B;
+  --primary-foreground: #1A1714;
+  --secondary: #2D2823;
+  --secondary-foreground: #F1EAE0;
+  --muted: #2D2823;
+  --muted-foreground: #A39687;
+  --accent: #2D2823;
+  --accent-foreground: #F1EAE0;
+  --destructive: #D48A6B;
+  --destructive-foreground: #1A1714;
+  --border: #3D352D;
+  --input: #3D352D;
+  --ring: #D48A6B;
+  --code-bg: #1A1714;
+  --code-ink: #F1EAE0;
+}
+
+/* ─── Base ───────────────────────────────────────────────────────────────── */
+
+* {
+  @apply border-border;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-background text-foreground antialiased;
+  font-feature-settings: 'ss01', 'cv11';
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--primary) 25%, transparent);
+}
+
+/* Custom scrollbar */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--foreground) 15%, transparent);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--foreground) 28%, transparent);
+}
+
+/* Focus ring */
+.focus-warm {
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+}
+
+/* ─── Prose / Chat Message Styles (Assistant) ───────────────────────────── */
+
+.prose-bodha {
+  @apply font-serif text-[1.05rem] leading-[1.7] text-foreground;
+  max-width: 700px;
+  overflow-wrap: break-word;
+}
+.prose-bodha > *:first-child { margin-top: 0; }
+.prose-bodha > *:last-child { margin-bottom: 0; }
+.prose-bodha p { @apply my-3.5; }
+.prose-bodha h1,
+.prose-bodha h2,
+.prose-bodha h3,
+.prose-bodha h4 {
+  @apply font-display font-semibold text-foreground mt-6 mb-2.5 leading-snug;
+}
+.prose-bodha h1 { @apply text-[1.35rem]; }
+.prose-bodha h2 { @apply text-[1.22rem]; }
+.prose-bodha h3 { @apply text-[1.08rem]; }
+.prose-bodha strong { @apply font-semibold text-primary; }
+.prose-bodha em { @apply italic; }
+.prose-bodha a { @apply text-primary underline decoration-primary/40 decoration-[1.5px] underline-offset-2 hover:decoration-primary; }
+.prose-bodha ul { @apply my-3.5 ml-1 space-y-1.5; }
+.prose-bodha ul li { @apply relative pl-6; }
+.prose-bodha ul li::before {
+  content: '';
+  position: absolute;
+  left: 0.25rem;
+  top: 0.72em;
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--primary) 55%, transparent);
+}
+.prose-bodha ol { @apply my-3.5 ml-1 space-y-1.5 list-decimal pl-6 marker:text-primary marker:font-semibold; }
+.prose-bodha blockquote { @apply my-4 rounded-r-lg border-l-[3px] border-primary/60 bg-accent/50 py-1 pl-4 pr-3 italic text-foreground/85; }
+.prose-bodha hr { @apply my-6 border-border; }
+.prose-bodha table { @apply my-4 w-full border-collapse text-[0.95rem] font-sans; }
+.prose-bodha th { @apply border-b-2 border-border px-3 py-2 text-left font-semibold text-foreground; }
+.prose-bodha td { @apply border-b border-border/70 px-3 py-2 align-top; }
+.prose-bodha :not(pre) > code { @apply rounded-md bg-accent px-1.5 py-0.5 font-mono text-[0.86em] text-primary; }
+.prose-bodha img { @apply my-4 max-w-full rounded-xl border border-border; }
+
+/* KaTeX math */
+.katex { font-size: 1.04em; }
+.katex-display { @apply my-4 overflow-x-auto overflow-y-hidden pb-1; }
+
+/* ─── Code Blocks (warm dark, like an inset book page) ───────────────────── */
+
+.prose-bodha pre {
+  background: var(--code-bg);
+  color: var(--code-ink);
+  @apply my-4 overflow-x-auto rounded-xl border border-black/10 p-4 font-mono text-[0.84rem] leading-relaxed;
+}
+.prose-bodha pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* Highlight.js warm syntax theme */
+.hljs-comment,
+.hljs-quote { color: #93866c; font-style: italic; }
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-formula { color: #e8906c; }
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string { color: #b5c98e; }
+.hljs-number,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-type,
+.hljs-selector-class,
+.hljs-selector-attr,
+.hljs-selector-pseudo { color: #e6c07a; }
+.hljs-title,
+.hljs-section,
+.hljs-title.class_,
+.hljs-title.function_ { color: #8fc6e3; }
+.hljs-built_in,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-params { color: #d4a5a5; }
+.hljs-attr,
+.hljs-operator,
+.hljs-property { color: #d8bfa8; }
+.hljs-meta,
+.hljs-name { color: #a8d5ba; }
+.hljs-deletion { color: #e08d8d; }
+
+/* ─── PDF.js Text Layer (v4) ─────────────────────────────────────────────── */
+
+.textLayer {
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 2;
+}
+.textLayer span,
+.textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.textLayer ::selection {
+  background: color-mix(in srgb, var(--primary) 28%, transparent);
+}
+.textLayer .endOfContent {
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: -1;
+  cursor: default;
+  user-select: none;
+  display: block;
+}
+
+/* ─── Utilities ──────────────────────────────────────────────────────────── */
+
+@layer utilities {
+  .writing-caret::after {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 1.05em;
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    background: color-mix(in srgb, var(--primary) 70%, transparent);
+    border-radius: 2px;
+    animation: blink 1s step-end infinite;
+  }
+  .card-warm {
+    @apply rounded-2xl border border-border bg-card shadow-warm;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:bg-primary/90 focus-warm disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-all hover:border-primary/50 hover:bg-accent focus-warm;
+  }
+  .input-warm {
+    @apply w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary/60 focus-warm;
+  }
+}
