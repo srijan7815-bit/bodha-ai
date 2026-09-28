@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { Timestamp } from 'firebase-admin/firestore'
+import { getStore } from '@/lib/store'
+import { newSessionToken, sessionCookieOptions, sessionExpiry, SESSION_COOKIE } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -57,7 +59,18 @@ export async function POST(req: NextRequest) {
       await userRef.update({ name: parsed.data.name })
     }
 
-    return NextResponse.json({ ok: true })
+    // The app shell authenticates with an httpOnly cookie, so mint one here.
+    const store = await getStore()
+    const session = newSessionToken()
+    await store.createSession({
+      tokenHash: session.tokenHash,
+      userId: decoded.uid,
+      expiresAt: sessionExpiry().toISOString(),
+    })
+
+    const res = NextResponse.json({ ok: true })
+    res.cookies.set(SESSION_COOKIE, session.token, sessionCookieOptions)
+    return res
   } catch (err) {
     console.error('[auth/sync]', (err as Error).message)
     return NextResponse.json({ error: 'Sync failed' }, { status: 401 })

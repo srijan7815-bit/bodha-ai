@@ -49,6 +49,11 @@ export interface NewUser {
   email: string
   name: string
   passwordHash: string
+  /**
+   * Plaintext password, passed only so the Firestore store can mirror the
+   * account into Firebase Auth when that service is enabled. Never stored.
+   */
+  password?: string
 }
 
 export interface Session {

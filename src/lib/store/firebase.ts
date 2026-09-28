@@ -10,6 +10,8 @@ import type {
   User,
 } from '@/lib/types'
 import type { AdminServices } from '@/lib/firebase/admin'
+import { firebaseAuthReady } from '@/lib/firebase/admin'
+import { verifyPassword } from '@/lib/password'
 
 /**
  * Firebase Store — the production store per the BODHA spec.
@@ -25,7 +27,12 @@ import type { AdminServices } from '@/lib/firebase/admin'
  *
  * Every lookup is owner-scoped (ownerId param from the authenticated request),
  * so a signed-in user can never touch another user's data at the storage layer.
- * Auth is Firebase Auth's job; the session methods are inert no-ops here.
+ * Accounts: email/password is verified from the scrypt hash stored on the user
+ * document, which keeps sign-up/sign-in working even when Firebase
+ * Authentication is not enabled on the project. When Authentication *is*
+ * enabled the account is mirrored into it as well, so the Firebase client SDK
+ * and Google sign-in work for the same account. Sessions are cookie-backed
+ * documents in the top-level `sessions` collection.
  */
 
 // Firestore docs are limited to ~1 MB; keep the extracted text comfortably under.
@@ -64,42 +71,44 @@ export class FirebaseStore implements Store {
 
   async createUser(user: NewUser): Promise<User> {
     const admin = await this.admin()
-    // Passwords belong to Firebase Auth; the local-mode hash is not stored here.
     const { randomUUID } = await import('node:crypto')
-    const authUser = await admin.auth.createUser({
-      email: user.email.toLowerCase(),
-      displayName: user.name,
-      password: randomUUID(),
-    })
+    const id = randomUUID()
+    const email = user.email.toLowerCase()
     const createdAt = new Date()
-    await admin.db
-      .collection('users')
-      .doc(authUser.uid)
-      .set({ email: user.email.toLowerCase(), name: user.name, createdAt })
-    return {
-      id: authUser.uid,
-      email: user.email.toLowerCase(),
+
+    await admin.db.collection('users').doc(id).set({
+      email,
       name: user.name,
-      createdAt: createdAt.toISOString(),
+      createdAt,
+      passwordHash: user.passwordHash,
+    })
+
+    // Best effort: mirror the account into Firebase Auth when that service is
+    // actually enabled, so the client SDK (and Google sign-in) see the same
+    // account. Sign-up must never fail because of it.
+    if (user.password && (await firebaseAuthReady())) {
+      try {
+        await admin.auth.createUser({ uid: id, email, displayName: user.name, password: user.password })
+      } catch (err) {
+        console.warn('[store] Firebase Auth mirror skipped:', (err as Error).message)
+      }
     }
+
+    return { id, email, name: user.name, createdAt: createdAt.toISOString() }
   }
 
   async getUserByEmail(email: string): Promise<User | null> {
     const admin = await this.admin()
-    try {
-      const authUser = await admin.auth.getUserByEmail(email.toLowerCase())
-      const doc = await admin.db.collection('users').doc(authUser.uid).get()
-      const data = (doc.data() ?? {}) as FsDocData
-      return {
-        id: authUser.uid,
-        email: data.email ?? authUser.email ?? email.toLowerCase(),
-        name: data.name ?? authUser.displayName ?? 'Student',
-        createdAt: data.createdAt ? toISO(data.createdAt) : new Date().toISOString(),
-        avatarUrl: data.avatarUrl ?? authUser.photoURL,
-      }
-    } catch (e) {
-      if ((e as { code?: string })?.code === 'auth/user-not-found') return null
-      throw e
+    const snap = await admin.db.collection('users').where('email', '==', email.toLowerCase()).limit(1).get()
+    if (snap.empty) return null
+    const doc = snap.docs[0]
+    const data = (doc.data() ?? {}) as FsDocData
+    return {
+      id: doc.id,
+      email: data.email ?? email.toLowerCase(),
+      name: data.name ?? 'Student',
+      createdAt: toISO(data.createdAt),
+      avatarUrl: data.avatarUrl,
     }
   }
 
@@ -121,18 +130,47 @@ export class FirebaseStore implements Store {
     return { id, email: data.email ?? '', name: data.name ?? 'Student', createdAt: toISO(data.createdAt), avatarUrl: data.avatarUrl }
   }
 
-  async verifyUserPassword(): Promise<boolean> {
-    // Firebase Auth owns credentials in this mode.
-    return false
+  async verifyUserPassword(userId: string, password: string): Promise<boolean> {
+    const admin = await this.admin()
+    const doc = await admin.db.collection('users').doc(userId).get()
+    const stored = (doc.data() ?? {}).passwordHash
+    return typeof stored === 'string' && verifyPassword(password, stored)
   }
 
-  // ─── Sessions (unused in Firebase mode) ───────────────────────────────────
+  // ─── Sessions: sessions/{tokenHash} ───────────────────────────────────────
 
-  async createSession(): Promise<void> {}
-  async getSession(): Promise<Session | null> {
-    return null
+  private sessionRef(admin: AdminServices, tokenHash: string) {
+    return admin.db.collection('sessions').doc(tokenHash)
   }
-  async deleteSession(): Promise<void> {}
+
+  async createSession(session: Session): Promise<void> {
+    const admin = await this.admin()
+    await this.sessionRef(admin, session.tokenHash).set({
+      userId: session.userId,
+      expiresAt: new Date(session.expiresAt),
+      createdAt: new Date(),
+    })
+  }
+
+  async getSession(tokenHash: string): Promise<Session | null> {
+    const admin = await this.admin()
+    const doc = await this.sessionRef(admin, tokenHash).get()
+    if (!doc.exists) return null
+    const data = (doc.data() ?? {}) as FsDocData
+    if (!data.userId || !data.expiresAt) return null
+
+    const expiresAt = toISO(data.expiresAt)
+    if (new Date(expiresAt).getTime() < Date.now()) {
+      await this.deleteSession(tokenHash).catch(() => {})
+      return null
+    }
+    return { tokenHash, userId: data.userId, expiresAt }
+  }
+
+  async deleteSession(tokenHash: string): Promise<void> {
+    const admin = await this.admin()
+    await this.sessionRef(admin, tokenHash).delete().catch(() => {})
+  }
 
   // ─── Chats: users/{uid}/chats/{chatId} ────────────────────────────────────
 

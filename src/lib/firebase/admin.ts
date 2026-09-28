@@ -121,8 +121,48 @@ export async function requireAdmin(): Promise<AdminServices> {
   return admin
 }
 
+let authReady: { value: boolean; checkedAt: number } | null = null
+let authReadyLogged = false
+
+/**
+ * Is Firebase Authentication actually usable on this project?
+ *
+ * The Admin SDK happily constructs an Auth instance for a project where
+ * Authentication was never initialised, but every call then fails with
+ * `auth/configuration-not-found`. Probe once (cheap `listUsers`) and cache the
+ * answer so sign-up doesn't pay for a doomed round trip every time.
+ */
+export async function firebaseAuthReady(): Promise<boolean> {
+  const TTL_MS = 5 * 60 * 1000
+  if (authReady && Date.now() - authReady.checkedAt < TTL_MS) return authReady.value
+
+  const admin = await getAdmin().catch(() => null)
+  if (!admin) return false
+
+  let value = false
+  try {
+    await admin.auth.listUsers(1)
+    value = true
+  } catch (err) {
+    value = false
+    if (!authReadyLogged) {
+      authReadyLogged = true
+      console.warn(
+        '[firebase-admin] Firebase Authentication is not available:',
+        (err as Error).message,
+        '— falling back to Firestore-backed email/password sign-in.',
+      )
+    }
+  }
+
+  authReady = { value, checkedAt: Date.now() }
+  return value
+}
+
 /** Clears the cached SDK instance (hot reload / tests). */
 export function resetAdmin(): void {
   cached = null
   initFailure = null
+  authReady = null
+  authReadyLogged = false
 }

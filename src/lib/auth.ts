@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { cookies } from 'next/headers'
 import { getStore } from '@/lib/store'
 import type { User } from '@/lib/types'
@@ -7,24 +7,10 @@ export const SESSION_COOKIE = 'bodha_session'
 export const SESSION_DAYS = 30
 
 // ─── Passwords (scrypt, no native deps) ────────────────────────────────────
+// Defined in ./password (which the stores can import without pulling in
+// next/headers) and re-exported here so existing imports keep working.
 
-export function hashPassword(password: string): string {
-  const salt = randomBytes(16).toString('hex')
-  const key = scryptSync(password, salt, 32).toString('hex')
-  return `scrypt$${salt}$${key}`
-}
-
-export function verifyPassword(password: string, stored: string): boolean {
-  try {
-    const [scheme, salt, key] = stored.split('$')
-    if (scheme !== 'scrypt' || !salt || !key) return false
-    const derived = scryptSync(password, salt, 32)
-    const expected = Buffer.from(key, 'hex')
-    return derived.length === expected.length && timingSafeEqual(derived, expected)
-  } catch {
-    return false
-  }
-}
+export { hashPassword, verifyPassword } from './password'
 
 // ─── Sessions ────────────────────────────────────────────────────────────────
 

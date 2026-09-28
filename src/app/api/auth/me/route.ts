@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSessionUser, publicUser } from '@/lib/auth'
-import { isFirebaseAdminConfigured } from '@/lib/firebase/admin'
+import { firebaseAuthReady, isFirebaseAdminConfigured } from '@/lib/firebase/admin'
 import { aiStatus } from '@/lib/ai'
 import { storeMode } from '@/lib/store'
 
@@ -17,6 +17,9 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     user: user ? publicUser(user) : null,
     mode,
+    // True only when Firebase Authentication is enabled, so the sign-in form
+    // can decide whether offering Google sign-in makes sense.
+    firebaseAuth: mode === 'firebase' ? await firebaseAuthReady() : false,
     ai: aiStatus(),
     store: storeMode(),
   })

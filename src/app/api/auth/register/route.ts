@@ -13,7 +13,6 @@ import {
   SESSION_COOKIE,
 } from '@/lib/auth'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
-import { isFirebaseAdminConfigured } from '@/lib/firebase/admin'
 
 export const dynamic = 'force-dynamic'
 
@@ -24,14 +23,14 @@ const bodySchema = z.object({
 })
 
 /**
- * POST /api/auth/register — local demo-mode sign-up (email/password).
- * In Firebase mode the client signs up with Firebase Auth instead.
+ * POST /api/auth/register — email/password sign-up.
+ *
+ * Available in every deployment: the profile + scrypt hash are written to the
+ * active store (Firestore in production), and the account is mirrored into
+ * Firebase Auth when that service is enabled. Signs the new user in
+ * immediately with an httpOnly session cookie.
  */
 export async function POST(req: NextRequest) {
-  if (isFirebaseAdminConfigured()) {
-    return NextResponse.json({ error: 'Registration is handled by Firebase Auth in this deployment.' }, { status: 409 })
-  }
-
   const limited = rateLimit(`register:${clientIp(req)}`, 10, 10 * 60 * 1000)
   if (!limited.ok) {
     return NextResponse.json({ error: 'Too many attempts — try again in a few minutes.' }, { status: 429 })
@@ -56,7 +55,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'An account with that email already exists.' }, { status: 409 })
   }
 
-  const user = await store.createUser({ email, name, passwordHash: hashPassword(password) })
+  const user = await store.createUser({ email, name, passwordHash: hashPassword(password), password })
   const { token, tokenHash } = newSessionToken()
   await store.createSession({ tokenHash, userId: user.id, expiresAt: sessionExpiry().toISOString() })
 

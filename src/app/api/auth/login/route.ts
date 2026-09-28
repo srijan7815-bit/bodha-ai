@@ -9,7 +9,6 @@ import {
   SESSION_COOKIE,
 } from '@/lib/auth'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
-import { isFirebaseAdminConfigured } from '@/lib/firebase/admin'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,14 +18,14 @@ const bodySchema = z.object({
 })
 
 /**
- * POST /api/auth/login — local demo-mode sign-in (email/password).
- * In Firebase mode the client signs in with Firebase Auth instead.
+ * POST /api/auth/login — email/password sign-in.
+ *
+ * Works in both stores: the file store checks its on-disk hash, and the
+ * Firestore store checks the scrypt hash kept on users/{uid}, so sign-in never
+ * depends on Firebase Authentication being enabled. On success an httpOnly
+ * session cookie is issued — the same session the app shell reads.
  */
 export async function POST(req: NextRequest) {
-  if (isFirebaseAdminConfigured()) {
-    return NextResponse.json({ error: 'Sign-in is handled by Firebase Auth in this deployment.' }, { status: 409 })
-  }
-
   const limited = rateLimit(`login:${clientIp(req)}`, 15, 10 * 60 * 1000)
   if (!limited.ok) {
     return NextResponse.json({ error: 'Too many attempts — try again in a few minutes.' }, { status: 429 })
