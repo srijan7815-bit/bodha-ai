@@ -2,9 +2,8 @@
 const nextConfig = {
   reactStrictMode: true,
   eslint: { ignoreDuringBuilds: true },
-  experimental: {
-    serverExternalPackages: ['@e2b/code-interpreter'],
-  },
+  // Server-only packages that must not be bundled (Next 15 top-level key).
+  serverExternalPackages: ['@e2b/code-interpreter', 'firebase-admin'],
   webpack: (config) => {
     config.resolve.alias = {
       ...config.resolve.alias,

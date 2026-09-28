@@ -3,6 +3,7 @@ import { hashPassword } from '@/lib/auth'
 import type { Store } from '@/lib/types'
 import { FileStore } from './file'
 import { FirebaseStore } from './firebase'
+import { isFirebaseAdminConfigured } from '@/lib/firebase/admin'
 
 /**
  * Store selection + lifecycle.
@@ -10,8 +11,9 @@ import { FirebaseStore } from './firebase'
  *  - Firebase Admin env vars set  → FirebaseStore (cloud sync across devices)
  *  - otherwise                    → FileStore under data/bodha (zero-config demo)
  *
- * Both adapters implement the exact same interface and provision +
- * seed themselves on boot, so the app is identical in either mode.
+ * Both adapters implement the exact same interface, so the app is identical in
+ * either mode. The demo account is only seeded in local mode — in Firebase
+ * mode students register through Firebase Auth.
  */
 
 let storePromise: Promise<Store> | null = null
@@ -20,47 +22,48 @@ export const DEMO_EMAIL = 'demo@bodha.ai'
 export const DEMO_PASSWORD = 'bodha-demo'
 
 function isFirebaseConfigured(): boolean {
-  return !!(
-    process.env.FIREBASE_ADMIN_PROJECT_ID?.trim() &&
-    process.env.FIREBASE_ADMIN_CLIENT_EMAIL?.trim() &&
-    process.env.FIREBASE_ADMIN_PRIVATE_KEY?.trim()
-  )
+  return isFirebaseAdminConfigured()
 }
 
 async function bootstrap(store: Store): Promise<Store> {
   await store.init()
 
-  // Seed the demo account so anyone can try BODHA instantly.
-  const existing = await store.getUserByEmail(DEMO_EMAIL)
-  if (!existing) {
-    const demo = await store.createUser({
-      email: DEMO_EMAIL,
-      name: 'Demo Student',
-      passwordHash: hashPassword(DEMO_PASSWORD),
-    })
-    const chat = await store.createChat({
-      userId: demo.id,
-      title: 'Welcome to BODHA ✦',
-      documentId: null,
-    })
-    await store.createMessage(
-      chat.id,
-      'assistant',
-      [
-        'Namaste, and welcome to **BODHA** — your patient, warm-hearted AI tutor. 🪔',
-        '',
-        'A few things you can do here:',
-        '',
-        '- **Ask me anything you are learning** — maths, physics, history, languages, coding… I teach step by step and check your understanding along the way.',
-        '- **Upload a book or PDF** in the *Library* and read it in a calm, book-style reader — then ask me about any passage.',
-        '- **Talk to me by voice** — tap the mic and just speak your question.',
-        '- **Run code** — I can teach web programming with live examples you can run in the sandbox.',
-        '',
-        '> *Bodha* (बोध) means "awakening" in Sanskrit — that moment when understanding clicks.',
-        '',
-        'I was created by **Srijan Singh and Parv Mishra**. What shall we learn today?',
-      ].join('\n'),
-    )
+  // Local demo mode: seed the demo account so anyone can try BODHA instantly.
+  if (store.mode === 'file') {
+    const existing = await store.getUserByEmail(DEMO_EMAIL)
+    if (!existing) {
+      const demo = await store.createUser({
+        email: DEMO_EMAIL,
+        name: 'Demo Student',
+        passwordHash: hashPassword(DEMO_PASSWORD),
+      })
+      const chat = await store.createChat({
+        userId: demo.id,
+        title: 'Welcome to BODHA ✦',
+        documentId: null,
+      })
+      await store.createMessage(
+        chat.id,
+        'assistant',
+        [
+          'Namaste, and welcome to **BODHA** — your patient, warm-hearted AI tutor. 🪔',
+          '',
+          'A few things you can do here:',
+          '',
+          '- **Ask me anything you are learning** — maths, physics, history, languages, coding… I teach step by step and check your understanding along the way.',
+          '- **Upload a book or PDF** in the *Library* and read it in a calm, book-style reader — then ask me about any passage.',
+          '- **Talk to me by voice** — tap the mic and just speak your question.',
+          '- **Run code** — I can teach web programming with live examples you can run in the sandbox.',
+          '',
+          '> *Bodha* (बोध) means "awakening" in Sanskrit — that moment when understanding clicks.',
+          '',
+          'I was created by **Srijan Singh and Parv Mishra**. What shall we learn today?',
+        ].join('\n'),
+        undefined,
+        undefined,
+        demo.id,
+      )
+    }
   }
 
   return store

@@ -15,6 +15,7 @@ import type {
 
 const FILES = {
   users: 'users.json',
+  passwords: 'passwords.json',
   sessions: 'sessions.json',
   chats: 'chats.json',
   messages: 'messages.json',
@@ -23,6 +24,7 @@ const FILES = {
 
 interface FileData {
   users: User[]
+  passwords: Record<string, string>
   sessions: Session[]
   chats: Chat[]
   messages: Message[]
@@ -31,6 +33,7 @@ interface FileData {
 
 const emptyData: FileData = {
   users: [],
+  passwords: {},
   sessions: [],
   chats: [],
   messages: [],
@@ -100,6 +103,7 @@ export class FileStore implements Store {
     const now = new Date().toISOString()
     const newUser: User = { id, email: user.email.toLowerCase(), name: user.name, createdAt: now }
     this.data.users.push(newUser)
+    this.data.passwords[id] = user.passwordHash
     this.scheduleSave()
     return newUser
   }
@@ -146,13 +150,14 @@ export class FileStore implements Store {
   async verifyLogin(email: string, password: string): Promise<User | null> {
     const user = await this.getUserByEmail(email)
     if (!user) return null
-    // Find the stored password hash
-    const userData = this.data.users.find(u => u.id === user.id)
-    if (!userData) return null
-    // We need to store password hash separately - add to user object for file store
-    const stored = (userData as any).passwordHash
+    const stored = this.data.passwords[user.id]
     if (!stored || !verifyPassword(password, stored)) return null
     return user
+  }
+
+  async verifyUserPassword(userId: string, password: string): Promise<boolean> {
+    const stored = this.data.passwords[userId]
+    return !!stored && verifyPassword(password, stored)
   }
 
   // ─── Chats ────────────────────────────────────────────────────────────────
@@ -172,11 +177,11 @@ export class FileStore implements Store {
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
   }
 
-  async getChat(id: string): Promise<Chat | null> {
+  async getChat(id: string, _ownerId?: string): Promise<Chat | null> {
     return this.data.chats.find(c => c.id === id) ?? null
   }
 
-  async updateChat(id: string, patch: { title?: string; documentId?: string | null }): Promise<Chat | null> {
+  async updateChat(id: string, patch: { title?: string; documentId?: string | null }, _ownerId?: string): Promise<Chat | null> {
     const idx = this.data.chats.findIndex(c => c.id === id)
     if (idx === -1) return null
     const now = new Date().toISOString()
@@ -190,7 +195,7 @@ export class FileStore implements Store {
     return this.data.chats[idx]
   }
 
-  async deleteChat(id: string): Promise<void> {
+  async deleteChat(id: string, _ownerId?: string): Promise<void> {
     this.data.chats = this.data.chats.filter(c => c.id !== id)
     this.data.messages = this.data.messages.filter(m => m.chatId !== id)
     this.scheduleSave()
@@ -203,7 +208,8 @@ export class FileStore implements Store {
     role: MessageRole,
     content: string,
     toolCalls?: Message['toolCalls'],
-    toolResults?: Message['toolResults']
+    toolResults?: Message['toolResults'],
+    _ownerId?: string
   ): Promise<Message> {
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
@@ -219,13 +225,13 @@ export class FileStore implements Store {
     return message
   }
 
-  async listMessages(chatId: string): Promise<Message[]> {
+  async listMessages(chatId: string, _ownerId?: string): Promise<Message[]> {
     return this.data.messages
       .filter(m => m.chatId === chatId)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
   }
 
-  async deleteMessage(id: string): Promise<void> {
+  async deleteMessage(id: string, _ownerId?: string, _chatId?: string): Promise<void> {
     this.data.messages = this.data.messages.filter(m => m.id !== id)
     this.scheduleSave()
   }
@@ -256,12 +262,19 @@ export class FileStore implements Store {
       .map(({ content, textContent, ...meta }) => meta)
   }
 
-  async getDocument(id: string): Promise<DocumentRecord | null> {
+  async getDocument(id: string, _ownerId?: string): Promise<DocumentRecord | null> {
     return this.data.documents.find(d => d.id === id) ?? null
   }
 
-  async deleteDocument(id: string): Promise<void> {
+  async deleteDocument(id: string, _ownerId?: string): Promise<void> {
     this.data.documents = this.data.documents.filter(d => d.id !== id)
+    this.scheduleSave()
+  }
+
+  async updateDocumentText(id: string, _ownerId: string, text: string): Promise<void> {
+    const idx = this.data.documents.findIndex(d => d.id === id)
+    if (idx === -1) return
+    this.data.documents[idx].textContent = text
     this.scheduleSave()
   }
 }

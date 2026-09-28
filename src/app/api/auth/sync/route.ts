@@ -1,56 +1,65 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
-import { adminAuth, adminDb } from '@/lib/firebase/admin'
 import { Timestamp } from 'firebase-admin/firestore'
 
 export const dynamic = 'force-dynamic'
 
 const bodySchema = z.object({
   name: z.string().trim().min(1).max(100),
-  email: z.string().trim().email(),
+  email: z.string().trim().toLowerCase(),
 })
 
 /**
  * POST /api/auth/sync
- * Called after client-side Firebase registration to sync the user's
- * profile into the Firestore users collection. Verifies the Firebase ID token.
+ * Called by the client right after Firebase sign-up so the user's profile
+ * (name, email) exists at users/{uid} in Firestore. Verifies the Firebase
+ * ID token from the Authorization header.
  */
 export async function POST(req: NextRequest) {
+  const parsed = bodySchema.safeParse(await req.json().catch(() => null))
+  if (!parsed.success) {
+    return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+  }
+
+  const authHeader = req.headers.get('authorization')
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null
+  if (!token) {
+    return NextResponse.json({ error: 'Missing auth token' }, { status: 401 })
+  }
+
+  const { getAdmin } = await import('@/lib/firebase/admin')
+  let admin
   try {
-    const body = await req.json()
-    const parsed = bodySchema.safeParse(body)
-    if (!parsed.success) {
-      return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
-    }
+    admin = await getAdmin()
+  } catch {
+    admin = null
+  }
+  if (!admin) {
+    return NextResponse.json({ error: 'Firebase is not configured on the server' }, { status: 503 })
+  }
 
-    // Verify the Firebase ID token from the Authorization header
-    const authHeader = req.headers.get('authorization')
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
-    if (!token) {
-      return NextResponse.json({ error: 'Missing auth token' }, { status: 401 })
-    }
-
-    const decoded = await adminAuth.verifyIdToken(token)
-    if (decoded.email?.toLowerCase() !== parsed.data.email.toLowerCase()) {
+  try {
+    const decoded = await admin.auth.verifyIdToken(token)
+    if (decoded.email?.toLowerCase() !== parsed.data.email) {
       return NextResponse.json({ error: 'Token does not match email' }, { status: 403 })
     }
 
-    const userRef = adminDb.collection('users').doc(decoded.uid)
+    const userRef = admin.db.collection('users').doc(decoded.uid)
     const doc = await userRef.get()
 
     if (!doc.exists) {
       await userRef.set({
-        email: parsed.data.email.toLowerCase(),
+        email: parsed.data.email,
         name: parsed.data.name,
         createdAt: Timestamp.now(),
       })
-    } else if (!doc.data()?.name && parsed.data.name) {
+    } else if (!doc.data()?.name) {
       await userRef.update({ name: parsed.data.name })
     }
 
     return NextResponse.json({ ok: true })
   } catch (err) {
-    console.error('[auth/sync]', err)
-    return NextResponse.json({ error: 'Sync failed' }, { status: 500 })
+    console.error('[auth/sync]', (err as Error).message)
+    return NextResponse.json({ error: 'Sync failed' }, { status: 401 })
   }
 }

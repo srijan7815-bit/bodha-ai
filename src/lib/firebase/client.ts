@@ -1,41 +1,50 @@
-import { initializeApp, getApps, FirebaseApp } from 'firebase/app'
-import { getAuth, Auth } from 'firebase/auth'
-import { getFirestore, Firestore } from 'firebase/firestore'
-import { getStorage, FirebaseStorage } from 'firebase/storage'
+import { initializeApp, getApps, getApp, deleteApp, type FirebaseApp } from 'firebase/app'
+import { getAuth, type Auth } from 'firebase/auth'
+import { getFirestore, type Firestore } from 'firebase/firestore'
+import { getStorage, type FirebaseStorage } from 'firebase/storage'
+
+/**
+ * Client-side Firebase (Auth + Firestore + Storage).
+ *
+ * Only initialises when the public config is present — otherwise the app runs
+ * in local demo mode (cookie sessions + local file store) and these exports
+ * stay null.
+ */
 
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY?.trim() || undefined,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN?.trim() || undefined,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID?.trim() || undefined,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET?.trim() || undefined,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID?.trim() || undefined,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID?.trim() || undefined,
 }
 
-// Validate required config
-const requiredKeys = ['apiKey', 'authDomain', 'projectId', 'storageBucket', 'appId'] as const
-for (const key of requiredKeys) {
-  if (!firebaseConfig[key]) {
-    console.warn(`[Firebase] Missing config: NEXT_PUBLIC_FIREBASE_${key.toUpperCase()}`)
-  }
-}
+/** True when Firebase Auth/Storage/Firestore are available on the client. */
+export const firebaseClientEnabled = !!firebaseConfig.apiKey && !!firebaseConfig.authDomain && !!firebaseConfig.projectId
 
-let app: FirebaseApp
-let auth: Auth
-let db: Firestore
-let storage: FirebaseStorage
+export const firebaseConfigPublic = firebaseClientEnabled ? firebaseConfig : null
 
-if (typeof window !== 'undefined') {
-  // Client-side initialization
-  if (!getApps().length) {
-    app = initializeApp(firebaseConfig)
-  } else {
-    app = getApps()[0]
-  }
+let app: FirebaseApp | null = null
+let auth: Auth | null = null
+let db: Firestore | null = null
+let storage: FirebaseStorage | null = null
+
+if (typeof window !== 'undefined' && firebaseClientEnabled) {
+  app = getApps().length ? getApp() : initializeApp(firebaseConfig as Record<string, string>)
   auth = getAuth(app)
   db = getFirestore(app)
   storage = getStorage(app)
 }
 
 export { app, auth, db, storage }
-export { firebaseConfig }
+
+/** Eagerly clears a partially-initialised app (used by tests / hot reload). */
+export function resetFirebaseClient(): void {
+  if (typeof window === 'undefined') return
+  for (const a of getApps()) deleteApp(a).catch(() => {})
+  app = null
+  auth = null
+  db = null
+  storage = null
+}

@@ -1,5 +1,3 @@
-import { adminDb, adminAuth, adminStorage } from '@/lib/firebase/admin'
-import { hashPassword, verifyPassword, hashToken, sessionExpiry } from '@/lib/auth'
 import type {
   Chat,
   DocumentMeta,
@@ -11,255 +9,236 @@ import type {
   Store,
   User,
 } from '@/lib/types'
-import { Timestamp, FieldValue, Filter } from 'firebase-admin/firestore'
+import type { AdminServices } from '@/lib/firebase/admin'
 
-const COLLECTIONS = {
-  users: 'users',
-  sessions: 'sessions',
-  chats: 'chats',
-  messages: 'messages',
-  documents: 'documents',
-} as const
+/**
+ * Firebase Store — the production store per the BODHA spec.
+ *
+ * Firestore layout (mirrored by firestore.rules):
+ *   users/{uid}                                 profile
+ *   users/{uid}/chats/{chatId}                   conversation metadata
+ *   users/{uid}/chats/{chatId}/messages/{mid}    messages
+ *   users/{uid}/documents/{docId}               document metadata + extracted text
+ *
+ * Firebase Storage:
+ *   users/{uid}/uploads/{docId}                 the raw uploaded file
+ *
+ * Every lookup is owner-scoped (ownerId param from the authenticated request),
+ * so a signed-in user can never touch another user's data at the storage layer.
+ * Auth is Firebase Auth's job; the session methods are inert no-ops here.
+ */
 
-function toISO(v: Timestamp | Date | string | null | undefined): string {
-  if (v instanceof Timestamp) return v.toDate().toISOString()
+// Firestore docs are limited to ~1 MB; keep the extracted text comfortably under.
+const TEXT_LIMIT = 250_000
+
+function toISO(v: unknown): string {
+  if (v && typeof v === 'object' && 'toDate' in (v as Record<string, unknown>)) {
+    return (v as { toDate(): Date }).toDate().toISOString()
+  }
   if (v instanceof Date) return v.toISOString()
   if (typeof v === 'string') return v
   return new Date().toISOString()
 }
 
-function mapUser(doc: FirebaseFirestore.DocumentSnapshot): User {
-  const data = doc.data()!
-  return {
-    id: doc.id,
-    email: data.email,
-    name: data.name,
-    createdAt: toISO(data.createdAt),
-    avatarUrl: data.avatarUrl,
-  }
-}
+type Fs = import('firebase-admin/firestore').Firestore
+type FsDocRef = import('firebase-admin/firestore').DocumentReference
+type FsDocData = import('firebase-admin/firestore').DocumentData
 
-function mapChat(doc: FirebaseFirestore.DocumentSnapshot): Chat {
-  const data = doc.data()!
-  return {
-    id: doc.id,
-    userId: data.userId,
-    title: data.title,
-    documentId: data.documentId ?? null,
-    createdAt: toISO(data.createdAt),
-    updatedAt: toISO(data.updatedAt),
-  }
-}
-
-function mapMessage(doc: FirebaseFirestore.DocumentSnapshot): Message {
-  const data = doc.data()!
-  return {
-    id: doc.id,
-    chatId: data.chatId,
-    role: data.role,
-    content: data.content,
-    createdAt: toISO(data.createdAt),
-    toolCalls: data.toolCalls,
-    toolResults: data.toolResults,
-  }
-}
-
-function mapDocumentMeta(doc: FirebaseFirestore.DocumentSnapshot): DocumentMeta {
-  const data = doc.data()!
-  return {
-    id: doc.id,
-    userId: data.userId,
-    title: data.title,
-    kind: data.kind,
-    mime: data.mime,
-    sizeBytes: data.sizeBytes,
-    pageCount: data.pageCount ?? null,
-    createdAt: toISO(data.createdAt),
-  }
-}
-
-function mapDocumentRecord(doc: FirebaseFirestore.DocumentSnapshot): DocumentRecord {
-  const data = doc.data()!
-  return {
-    ...mapDocumentMeta(doc),
-    content: Buffer.from(data.contentBase64, 'base64'),
-    textContent: data.textContent ?? '',
-  }
-}
-
-/**
- * Firebase Store — uses Firestore for all data, Firebase Auth for auth,
- * Firebase Storage for document files.
- * Selected automatically when Firebase Admin env vars are set.
- */
 export class FirebaseStore implements Store {
   readonly mode = 'firebase' as const
 
-  async init(): Promise<void> {
-    // Firestore indexes are created via firestore.indexes.json or console
-    // Storage bucket exists if Firebase project is set up
+  private async admin(): Promise<AdminServices> {
+    const { requireAdmin } = await import('@/lib/firebase/admin')
+    return requireAdmin()
   }
 
-  async close(): Promise<void> {
-    // No persistent connections to close
+  async init(): Promise<void> {
+    // Nothing to provision — the project is created in the Firebase console.
+    await this.admin()
   }
+
+  async close(): Promise<void> {}
 
   // ─── Users ────────────────────────────────────────────────────────────────
 
   async createUser(user: NewUser): Promise<User> {
-    // Create Firebase Auth user
-    const authUser = await adminAuth.createUser({
-      email: user.email,
-      password: user.passwordHash, // We store our own hash, but Firebase needs a password
-      displayName: user.name,
-    })
-
-    // Store additional user data in Firestore
-    const now = Timestamp.now()
-    await adminDb.collection(COLLECTIONS.users).doc(authUser.uid).set({
+    const admin = await this.admin()
+    // Passwords belong to Firebase Auth; the local-mode hash is not stored here.
+    const { randomUUID } = await import('node:crypto')
+    const authUser = await admin.auth.createUser({
       email: user.email.toLowerCase(),
-      name: user.name,
-      passwordHash: user.passwordHash,
-      createdAt: now,
+      displayName: user.name,
+      password: randomUUID(),
     })
-
+    const createdAt = new Date()
+    await admin.db
+      .collection('users')
+      .doc(authUser.uid)
+      .set({ email: user.email.toLowerCase(), name: user.name, createdAt })
     return {
       id: authUser.uid,
       email: user.email.toLowerCase(),
       name: user.name,
-      createdAt: now.toDate().toISOString(),
+      createdAt: createdAt.toISOString(),
     }
   }
 
   async getUserByEmail(email: string): Promise<User | null> {
+    const admin = await this.admin()
     try {
-      const authUser = await adminAuth.getUserByEmail(email.toLowerCase())
-      const doc = await adminDb.collection(COLLECTIONS.users).doc(authUser.uid).get()
-      if (!doc.exists) return null
-      return mapUser(doc)
-    } catch (e: any) {
-      if (e.code === 'auth/user-not-found') return null
+      const authUser = await admin.auth.getUserByEmail(email.toLowerCase())
+      const doc = await admin.db.collection('users').doc(authUser.uid).get()
+      const data = (doc.data() ?? {}) as FsDocData
+      return {
+        id: authUser.uid,
+        email: data.email ?? authUser.email ?? email.toLowerCase(),
+        name: data.name ?? authUser.displayName ?? 'Student',
+        createdAt: data.createdAt ? toISO(data.createdAt) : new Date().toISOString(),
+        avatarUrl: data.avatarUrl ?? authUser.photoURL,
+      }
+    } catch (e) {
+      if ((e as { code?: string })?.code === 'auth/user-not-found') return null
       throw e
     }
   }
 
   async getUser(id: string): Promise<User | null> {
-    const doc = await adminDb.collection(COLLECTIONS.users).doc(id).get()
+    const admin = await this.admin()
+    const doc = await admin.db.collection('users').doc(id).get()
     if (!doc.exists) return null
-    return mapUser(doc)
+    const data = doc.data()!
+    return { id, email: data.email ?? '', name: data.name ?? 'Student', createdAt: toISO(data.createdAt), avatarUrl: data.avatarUrl }
   }
 
   async updateUser(id: string, patch: Partial<Pick<User, 'name' | 'avatarUrl'>>): Promise<User | null> {
-    const ref = adminDb.collection(COLLECTIONS.users).doc(id)
+    const admin = await this.admin()
+    const ref = admin.db.collection('users').doc(id)
     await ref.update(patch)
     const doc = await ref.get()
-    return doc.exists ? mapUser(doc) : null
-  }
-
-  // ─── Sessions (server-side session tokens for API routes) ────────────────
-
-  async createSession(session: Session): Promise<void> {
-    await adminDb.collection(COLLECTIONS.sessions).doc(session.tokenHash).set({
-      userId: session.userId,
-      expiresAt: Timestamp.fromDate(new Date(session.expiresAt)),
-      createdAt: Timestamp.now(),
-    })
-  }
-
-  async getSession(tokenHash: string): Promise<Session | null> {
-    const doc = await adminDb.collection(COLLECTIONS.sessions).doc(tokenHash).get()
     if (!doc.exists) return null
     const data = doc.data()!
-    if (data.expiresAt.toDate().getTime() < Date.now()) {
-      await this.deleteSession(tokenHash)
-      return null
-    }
+    return { id, email: data.email ?? '', name: data.name ?? 'Student', createdAt: toISO(data.createdAt), avatarUrl: data.avatarUrl }
+  }
+
+  async verifyUserPassword(): Promise<boolean> {
+    // Firebase Auth owns credentials in this mode.
+    return false
+  }
+
+  // ─── Sessions (unused in Firebase mode) ───────────────────────────────────
+
+  async createSession(): Promise<void> {}
+  async getSession(): Promise<Session | null> {
+    return null
+  }
+  async deleteSession(): Promise<void> {}
+
+  // ─── Chats: users/{uid}/chats/{chatId} ────────────────────────────────────
+
+  private chatRef(db: Fs, ownerId: string, chatId: string): FsDocRef {
+    return db.collection('users').doc(ownerId).collection('chats').doc(chatId)
+  }
+
+  private mapChat(id: string, data: FsDocData): Chat {
     return {
-      tokenHash,
+      id,
       userId: data.userId,
-      expiresAt: toISO(data.expiresAt),
+      title: data.title ?? 'New chat',
+      documentId: data.documentId ?? null,
+      createdAt: toISO(data.createdAt),
+      updatedAt: toISO(data.updatedAt),
     }
   }
-
-  async deleteSession(tokenHash: string): Promise<void> {
-    await adminDb.collection(COLLECTIONS.sessions).doc(tokenHash).delete()
-  }
-
-  async verifyLogin(email: string, password: string): Promise<User | null> {
-    const user = await this.getUserByEmail(email)
-    if (!user) return null
-
-    const doc = await adminDb.collection(COLLECTIONS.users).doc(user.id).get()
-    const data = doc.data()!
-    if (!verifyPassword(password, data.passwordHash)) return null
-
-    return user
-  }
-
-  // ─── Chats ────────────────────────────────────────────────────────────────
 
   async createChat(chat: Pick<Chat, 'userId' | 'title' | 'documentId'>): Promise<Chat> {
-    const now = Timestamp.now()
-    const ref = await adminDb.collection(COLLECTIONS.chats).add({
+    const admin = await this.admin()
+    const now = new Date()
+    const ref = await this.dbChats(admin, chat.userId).add({
       userId: chat.userId,
       title: chat.title,
       documentId: chat.documentId,
       createdAt: now,
       updatedAt: now,
     })
-    const doc = await ref.get()
-    return mapChat(doc)
+    return {
+      id: ref.id,
+      userId: chat.userId,
+      title: chat.title,
+      documentId: chat.documentId,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    }
+  }
+
+  private dbChats(admin: AdminServices, userId: string) {
+    return admin.db.collection('users').doc(userId).collection('chats')
   }
 
   async listChats(userId: string): Promise<Chat[]> {
-    const snap = await adminDb
-      .collection(COLLECTIONS.chats)
-      .where('userId', '==', userId)
-      .orderBy('updatedAt', 'desc')
-      .get()
-    return snap.docs.map(mapChat)
+    const admin = await this.admin()
+    const snap = await this.dbChats(admin, userId).orderBy('updatedAt', 'desc').get()
+    return snap.docs.map(d => this.mapChat(d.id, d.data()))
   }
 
-  async getChat(id: string): Promise<Chat | null> {
-    const doc = await adminDb.collection(COLLECTIONS.chats).doc(id).get()
+  async getChat(id: string, ownerId?: string): Promise<Chat | null> {
+    if (!ownerId) return null
+    const admin = await this.admin()
+    const doc = await this.chatRef(admin.db, ownerId, id).get()
     if (!doc.exists) return null
-    return mapChat(doc)
+    return this.mapChat(doc.id, doc.data())
   }
 
-  async updateChat(id: string, patch: { title?: string; documentId?: string | null }): Promise<Chat | null> {
-    const ref = adminDb.collection(COLLECTIONS.chats).doc(id)
-    const updateData: Record<string, any> = { updatedAt: Timestamp.now() }
-    if (patch.title !== undefined) updateData.title = patch.title
-    if (patch.documentId !== undefined) updateData.documentId = patch.documentId
-    await ref.update(updateData)
+  async updateChat(id: string, patch: { title?: string; documentId?: string | null }, ownerId?: string): Promise<Chat | null> {
+    if (!ownerId) return null
+    const admin = await this.admin()
+    const ref = this.chatRef(admin.db, ownerId, id)
+    const update: Record<string, unknown> = { updatedAt: new Date() }
+    if (patch.title !== undefined) update.title = patch.title
+    if (patch.documentId !== undefined) update.documentId = patch.documentId
+    await ref.update(update)
     const doc = await ref.get()
-    return doc.exists ? mapChat(doc) : null
+    return doc.exists ? this.mapChat(doc.id, doc.data()) : null
   }
 
-  async deleteChat(id: string): Promise<void> {
-    const batch = adminDb.batch()
-
-    // Delete messages subcollection
-    const messagesSnap = await adminDb.collection(COLLECTIONS.messages).where('chatId', '==', id).get()
-    messagesSnap.docs.forEach(doc => batch.delete(doc.ref))
-
-    // Delete chat
-    batch.delete(adminDb.collection(COLLECTIONS.chats).doc(id))
-
+  async deleteChat(id: string, ownerId?: string): Promise<void> {
+    if (!ownerId) return
+    const admin = await this.admin()
+    const ref = this.chatRef(admin.db, ownerId, id)
+    // Delete the nested messages first (no recursive delete in the SDK).
+    const messages = await ref.collection('messages').get()
+    const batch = admin.db.batch()
+    messages.docs.forEach(m => batch.delete(m.ref))
+    batch.delete(ref)
     await batch.commit()
   }
 
-  // ─── Messages ─────────────────────────────────────────────────────────────
+  // ─── Messages: users/{uid}/chats/{chatId}/messages/{mid} ───────────────────
+
+  private mapMessage(id: string, data: FsDocData): Message {
+    return {
+      id,
+      chatId: data.chatId,
+      role: data.role,
+      content: data.content,
+      createdAt: toISO(data.createdAt),
+      toolCalls: data.toolCalls ?? undefined,
+      toolResults: data.toolResults ?? undefined,
+    }
+  }
 
   async createMessage(
     chatId: string,
     role: MessageRole,
     content: string,
     toolCalls?: Message['toolCalls'],
-    toolResults?: Message['toolResults']
+    toolResults?: Message['toolResults'],
+    ownerId?: string,
   ): Promise<Message> {
-    const now = Timestamp.now()
-    const ref = await adminDb.collection(COLLECTIONS.messages).add({
+    if (!ownerId) throw new Error('ownerId is required in Firebase mode')
+    const admin = await this.admin()
+    const chatRef = this.chatRef(admin.db, ownerId, chatId)
+    const now = new Date()
+    const msgRef = await chatRef.collection('messages').add({
       chatId,
       role,
       content,
@@ -267,71 +246,123 @@ export class FirebaseStore implements Store {
       toolCalls: toolCalls ?? null,
       toolResults: toolResults ?? null,
     })
-
-    // Update chat's updatedAt
-    await adminDb.collection(COLLECTIONS.chats).doc(chatId).update({ updatedAt: now })
-
-    const doc = await ref.get()
-    return mapMessage(doc)
+    await chatRef.update({ updatedAt: now })
+    return {
+      id: msgRef.id,
+      chatId,
+      role,
+      content,
+      createdAt: now.toISOString(),
+      toolCalls: toolCalls ?? undefined,
+      toolResults: toolResults ?? undefined,
+    }
   }
 
-  async listMessages(chatId: string): Promise<Message[]> {
-    const snap = await adminDb
-      .collection(COLLECTIONS.messages)
-      .where('chatId', '==', chatId)
+  async listMessages(chatId: string, ownerId?: string): Promise<Message[]> {
+    if (!ownerId) return []
+    const admin = await this.admin()
+    const snap = await this.chatRef(admin.db, ownerId, chatId)
+      .collection('messages')
       .orderBy('createdAt', 'asc')
       .get()
-    return snap.docs.map(mapMessage)
+    return snap.docs.map(d => this.mapMessage(d.id, d.data()))
   }
 
-  async deleteMessage(id: string): Promise<void> {
-    await adminDb.collection(COLLECTIONS.messages).doc(id).delete()
+  async deleteMessage(id: string, ownerId?: string, chatId?: string): Promise<void> {
+    if (!ownerId || !chatId) return
+    const admin = await this.admin()
+    await this.chatRef(admin.db, ownerId, chatId).collection('messages').doc(id).delete()
   }
 
-  // ─── Documents ────────────────────────────────────────────────────────────
+  // ─── Documents: users/{uid}/documents/{docId} (+ Storage) ──────────────────
+
+  private dbDocuments(admin: AdminServices, userId: string) {
+    return admin.db.collection('users').doc(userId).collection('documents')
+  }
+
+  private mapDocMeta(id: string, data: FsDocData): DocumentMeta {
+    return {
+      id,
+      userId: data.userId,
+      title: data.title,
+      kind: data.kind,
+      mime: data.mime,
+      sizeBytes: data.sizeBytes ?? 0,
+      pageCount: data.pageCount ?? null,
+      createdAt: toISO(data.createdAt),
+    }
+  }
+
+  private storagePath(userId: string, docId: string): string {
+    return `users/${userId}/uploads/${docId}`
+  }
 
   async createDocument(doc: DocumentRecord): Promise<DocumentMeta> {
-    const now = Timestamp.now()
-    await adminDb.collection(COLLECTIONS.documents).doc(doc.id).set({
-      userId: doc.userId,
-      title: doc.title,
-      kind: doc.kind,
-      mime: doc.mime,
-      sizeBytes: doc.sizeBytes,
-      pageCount: doc.pageCount,
-      contentBase64: doc.content.toString('base64'),
-      textContent: doc.textContent,
-      createdAt: now,
-    })
-    return { ...doc, createdAt: now.toDate().toISOString() }
+    const admin = await this.admin()
+    const clipped =
+      doc.textContent.length > TEXT_LIMIT
+        ? doc.textContent.slice(0, TEXT_LIMIT) + '\n\n[…truncated for storage limits…]'
+        : doc.textContent
+
+    await this.dbDocuments(admin, doc.userId)
+      .doc(doc.id)
+      .set({
+        userId: doc.userId,
+        title: doc.title,
+        kind: doc.kind,
+        mime: doc.mime,
+        sizeBytes: doc.sizeBytes,
+        pageCount: doc.pageCount,
+        textContent: clipped,
+        createdAt: new Date(),
+      })
+
+    await admin.storage
+      .bucket()
+      .file(this.storagePath(doc.userId, doc.id))
+      .save(doc.content, { contentType: doc.mime })
+
+    return { ...doc, createdAt: new Date().toISOString() }
   }
 
   async listDocuments(userId: string): Promise<DocumentMeta[]> {
-    const snap = await adminDb
-      .collection(COLLECTIONS.documents)
-      .where('userId', '==', userId)
-      .orderBy('createdAt', 'desc')
-      .get()
-    return snap.docs.map(mapDocumentMeta)
+    const admin = await this.admin()
+    const snap = await this.dbDocuments(admin, userId).orderBy('createdAt', 'desc').get()
+    return snap.docs.map(d => this.mapDocMeta(d.id, d.data()))
   }
 
-  async getDocument(id: string): Promise<DocumentRecord | null> {
-    const doc = await adminDb.collection(COLLECTIONS.documents).doc(id).get()
+  async getDocument(id: string, ownerId?: string): Promise<DocumentRecord | null> {
+    if (!ownerId) return null
+    const admin = await this.admin()
+    const doc = await this.dbDocuments(admin, ownerId).doc(id).get()
     if (!doc.exists) return null
-    return mapDocumentRecord(doc)
+    const data = doc.data()!
+    const meta = this.mapDocMeta(doc.id, data)
+
+    let content = Buffer.alloc(0)
+    try {
+      const [buf] = await admin.storage.bucket().file(this.storagePath(ownerId, id)).download()
+      content = buf
+    } catch {
+      // Bytes may be absent for small text documents kept inline.
+    }
+
+    return { ...meta, content, textContent: data.textContent ?? '' }
   }
 
-  async deleteDocument(id: string): Promise<void> {
-    const doc = await adminDb.collection(COLLECTIONS.documents).doc(id).get()
-    if (doc.exists) {
-      const data = doc.data()!
-      // Delete from Storage
-      try {
-        await adminStorage.bucket().file(`documents/${data.userId}/${id}`).delete()
-      } catch {
-        // Ignore storage errors
-      }
-    }
-    await adminDb.collection(COLLECTIONS.documents).doc(id).delete()
+  async deleteDocument(id: string, ownerId?: string): Promise<void> {
+    if (!ownerId) return
+    const admin = await this.admin()
+    try {
+      await admin.storage.bucket().file(this.storagePath(ownerId, id)).delete()
+    } catch {}
+    await this.dbDocuments(admin, ownerId).doc(id).delete()
+  }
+
+  async updateDocumentText(id: string, ownerId: string, text: string): Promise<void> {
+    const admin = await this.admin()
+    const clip =
+      text.length > 250_000 ? text.slice(0, 250_000) + '\n\n[…truncated for storage limits…]' : text
+    await this.dbDocuments(admin, ownerId).doc(id).set({ textContent: clip }, { merge: true })
   }
 }

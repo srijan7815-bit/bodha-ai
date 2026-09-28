@@ -3,39 +3,38 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Users: each user can read/update their own profile
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ── users/{uid} — profiles ─────────────────────────────────────────────
     match /users/{uid} {
-      allow read, update: if request.auth != null && request.auth.uid == uid;
-      allow create: if request.auth != null && request.auth.uid == uid;
-      allow delete: if false; // profiles are not deletable from the client
+      allow get, create, update: if isOwner(uid);
+      allow delete: if false; // profiles are managed server-side
+
+      // ── users/{uid}/chats/{chatId} — conversations ───────────────────────
+      match /chats/{chatId} {
+        allow read, create, update, delete: if isOwner(uid)
+          && (request.method != 'create' || request.resource.data.userId == uid);
+
+        // ── users/{uid}/chats/{chatId}/messages/{messageId} ─────────────────
+        match /messages/{messageId} {
+          allow read, create, update, delete: if isOwner(uid);
+        }
+      }
+
+      // ── users/{uid}/documents/{docId} — library metadata ──────────────────
+      match /documents/{docId} {
+        allow read, create, update, delete: if isOwner(uid);
+      }
     }
 
-    // Sessions: only the server (admin SDK) touches these — deny all client access
-    match /sessions/{tokenHash} {
+    // Anything else is denied.
+    match /{document=**} {
       allow read, write: if false;
-    }
-
-    // Chats: per-user, limited to their own data
-    match /chats/{chatId} {
-      allow read, update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
-    }
-
-    // Messages: per-user via the chat's userId
-    match /messages/{messageId} {
-      allow read, delete: if request.auth != null && resource.data.chatId in
-        // user owns the chat this message belongs to
-        get(/databases/{database}/documents/chats/$(resource.data.chatId)).data.userId == request.auth.uid
-        ? true : false;
-      allow create: if request.auth != null && request.resource.data.chatId in
-        get(/databases/{database}/documents/chats/$(request.resource.data.chatId)).data.userId == request.auth.uid
-        ? true : false;
-    }
-
-    // Documents: per-user, limited to their own data
-    match /documents/{docId} {
-      allow read, update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
     }
   }
 }

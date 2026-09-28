@@ -102,27 +102,31 @@ export interface Store {
   getUserByEmail(email: string): Promise<User | null>
   getUser(id: string): Promise<User | null>
   updateUser(id: string, patch: Partial<Pick<User, 'name' | 'avatarUrl'>>): Promise<User | null>
+  /** Local demo mode only — Firebase Auth owns passwords in cloud mode. */
+  verifyUserPassword(userId: string, password: string): Promise<boolean>
 
   // Sessions (handled by Firebase Auth client-side, but we keep for server ops)
   createSession(session: Session): Promise<void>
   getSession(tokenHash: string): Promise<Session | null>
   deleteSession(tokenHash: string): Promise<void>
 
-  // Chats
+  // Chats (ownerId is the authenticated user — required for direct doc access in Firebase mode)
   createChat(chat: Pick<Chat, 'userId' | 'title' | 'documentId'>): Promise<Chat>
   listChats(userId: string): Promise<Chat[]>
-  getChat(id: string): Promise<Chat | null>
-  updateChat(id: string, patch: { title?: string; documentId?: string | null }): Promise<Chat | null>
-  deleteChat(id: string): Promise<void>
+  getChat(id: string, ownerId?: string): Promise<Chat | null>
+  updateChat(id: string, patch: { title?: string; documentId?: string | null }, ownerId?: string): Promise<Chat | null>
+  deleteChat(id: string, ownerId?: string): Promise<void>
 
   // Messages
-  createMessage(chatId: string, role: MessageRole, content: string, toolCalls?: ToolCall[], toolResults?: ToolResult[]): Promise<Message>
-  listMessages(chatId: string): Promise<Message[]>
-  deleteMessage(id: string): Promise<void>
+  createMessage(chatId: string, role: MessageRole, content: string, toolCalls?: ToolCall[], toolResults?: ToolResult[], ownerId?: string): Promise<Message>
+  listMessages(chatId: string, ownerId?: string): Promise<Message[]>
+  deleteMessage(id: string, ownerId?: string, chatId?: string): Promise<void>
 
   // Documents
   createDocument(doc: DocumentRecord): Promise<DocumentMeta>
   listDocuments(userId: string): Promise<DocumentMeta[]>
-  getDocument(id: string): Promise<DocumentRecord | null>
-  deleteDocument(id: string): Promise<void>
+  getDocument(id: string, ownerId?: string): Promise<DocumentRecord | null>
+  deleteDocument(id: string, ownerId?: string): Promise<void>
+  /** Merge/replace a document's extracted text (OCR flow). */
+  updateDocumentText(id: string, ownerId: string, text: string): Promise<void>
 }

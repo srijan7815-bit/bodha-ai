@@ -5,7 +5,7 @@ import { useParams } from 'next/navigation'
 import { useAuth } from '@/components/AuthProvider'
 import AppShell from '@/components/AppShell'
 import ChatView from '@/components/ChatView'
-import { authFetch } from '@/lib/firebase/server-auth'
+import { authFetch } from '@/lib/firebase/client-token'
 import type { Chat, DocumentMeta, Message } from '@/lib/types'
 
 /**
