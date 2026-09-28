@@ -36,18 +36,34 @@ let cached: AdminServices | null = null
 let initFailure: Error | null = null
 
 /**
- * Service-account keys are usually pasted into a dashboard as a single line,
- * so newlines arrive as the two characters `\` `n`. Accept both that form and
- * a real multi-line PEM, with or without wrapping quotes.
+ * Rebuilds a service-account private key into valid PEM.
+ *
+ * Dashboards are rough on PEMs: the newlines survive as real line breaks, as
+ * the two characters `\n`, as spaces, or not at all — and `cert()` throws on
+ * anything that isn't a well-formed PEM, which takes the whole store down. So
+ * keep only the base64 body and re-wrap it at 64 characters, no matter how the
+ * value arrived. A key whose *bytes* were altered still cannot be rescued; this
+ * only repairs whitespace damage.
  */
 function normalizePrivateKey(raw: string | undefined): string | null {
-  const value = raw?.trim()
-  if (!value) return null
-  return value
+  const input = raw?.trim()
+  if (!input) return null
+
+  let value = input
     .replace(/^['"]|['"]$/g, '')
     .replace(/\\r\\n/g, '\n')
     .replace(/\\n/g, '\n')
     .trim()
+
+  const match = value.match(/-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/)
+  if (match) {
+    const [, label, rawBody] = match
+    const body = rawBody.replace(/[^A-Za-z0-9+/=]/g, '')
+    const lines = body.match(/.{1,64}/g) ?? [body]
+    value = `-----BEGIN ${label}-----\n${lines.join('\n')}\n-----END ${label}-----\n`
+  }
+
+  return value
 }
 
 function readCredentials(): AdminCredentials | null {
@@ -157,6 +173,51 @@ export async function firebaseAuthReady(): Promise<boolean> {
 
   authReady = { value, checkedAt: Date.now() }
   return value
+}
+
+export interface AdminHealth {
+  configured: boolean
+  /** Whether the SDK initialises (credential parses, app starts). */
+  admin: 'ok' | 'error' | 'unconfigured'
+  /** Whether a real Firestore round trip succeeds. */
+  firestore: 'ok' | 'error' | 'skipped'
+  detail?: string
+}
+
+/** Error text with anything sensitive taken out — safe to expose on /api/health. */
+function sanitize(message: string): string {
+  return message
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/g, '<email>')
+    .replace(/-----BEGIN[\s\S]*?-----/g, '<key>')
+    .replace(/[A-Za-z0-9+/=]{32,}/g, '<redacted>')
+    .replace(/\s+/g, ' ')
+    .slice(0, 240)
+}
+
+/**
+ * Diagnostic used by /api/health so a deployment can be checked from outside:
+ * distinguishes "credentials missing" from "credentials unusable" from
+ * "Firestore unreachable" without leaking secrets.
+ */
+export async function adminHealth(): Promise<AdminHealth> {
+  if (!isFirebaseAdminConfigured()) {
+    return { configured: false, admin: 'unconfigured', firestore: 'skipped' }
+  }
+
+  let admin: AdminServices
+  try {
+    admin = await requireAdmin()
+  } catch (err) {
+    return { configured: true, admin: 'error', firestore: 'skipped', detail: sanitize((err as Error).message) }
+  }
+
+  try {
+    // A read against a (possibly empty) collection — cheap and side-effect free.
+    await admin.db.collection('health').limit(1).get()
+    return { configured: true, admin: 'ok', firestore: 'ok' }
+  } catch (err) {
+    return { configured: true, admin: 'ok', firestore: 'error', detail: sanitize((err as Error).message) }
+  }
 }
 
 /** Clears the cached SDK instance (hot reload / tests). */

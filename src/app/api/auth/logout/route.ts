@@ -9,11 +9,16 @@ export const dynamic = 'force-dynamic'
  * Firebase sign-out happens client-side (Firebase Auth SDK).
  */
 export async function POST(req: NextRequest) {
-  const store = await getStore()
-
   const token = req.cookies.get(SESSION_COOKIE)?.value
   if (token) {
-    await store.deleteSession(hashToken(token)).catch(() => {})
+    // Signing out must succeed even if the store is having a bad day — the
+    // cookie is cleared either way.
+    try {
+      const store = await getStore()
+      await store.deleteSession(hashToken(token))
+    } catch (err) {
+      console.warn('[auth/logout] could not delete the stored session:', (err as Error).message)
+    }
   }
 
   const res = NextResponse.json({ ok: true })

@@ -50,16 +50,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'That email address does not look right.' }, { status: 400 })
   }
 
-  const store = await getStore()
-  if (await store.getUserByEmail(email)) {
-    return NextResponse.json({ error: 'An account with that email already exists.' }, { status: 409 })
+  // Database unreachable / credentials rejected — say so instead of a bare 500.
+  const unavailable = NextResponse.json(
+    {
+      error:
+        'Accounts are temporarily unavailable — the server could not reach its database. Please try again in a moment.',
+    },
+    { status: 503 },
+  )
+
+  try {
+    const store = await getStore()
+    if (await store.getUserByEmail(email)) {
+      return NextResponse.json({ error: 'An account with that email already exists.' }, { status: 409 })
+    }
+
+    const user = await store.createUser({ email, name, passwordHash: hashPassword(password), password })
+    const { token, tokenHash } = newSessionToken()
+    await store.createSession({ tokenHash, userId: user.id, expiresAt: sessionExpiry().toISOString() })
+
+    const res = NextResponse.json({ user: publicUser(user) })
+    res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions)
+    return res
+  } catch (err) {
+    // Database unreachable / credentials rejected — say so instead of a bare 500.
+    console.error('[auth/register] account store failed:', (err as Error).message)
+    return unavailable
   }
-
-  const user = await store.createUser({ email, name, passwordHash: hashPassword(password), password })
-  const { token, tokenHash } = newSessionToken()
-  await store.createSession({ tokenHash, userId: user.id, expiresAt: sessionExpiry().toISOString() })
-
-  const res = NextResponse.json({ user: publicUser(user) })
-  res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions)
-  return res
 }

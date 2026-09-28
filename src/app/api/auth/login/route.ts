@@ -36,17 +36,32 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Please enter your email and password.' }, { status: 400 })
   }
 
-  const store = await getStore()
-  const user = await store.getUserByEmail(parsed.data.email)
-  const passwordOk = user ? await store.verifyUserPassword(user.id, parsed.data.password) : false
-  if (!user || !passwordOk) {
-    return NextResponse.json({ error: 'That email or password is not right.' }, { status: 401 })
+  // Database unreachable / credentials rejected — say so instead of a bare 500.
+  const unavailable = NextResponse.json(
+    {
+      error:
+        'Accounts are temporarily unavailable — the server could not reach its database. Please try again in a moment.',
+    },
+    { status: 503 },
+  )
+
+  try {
+    const store = await getStore()
+    const user = await store.getUserByEmail(parsed.data.email)
+    const passwordOk = user ? await store.verifyUserPassword(user.id, parsed.data.password) : false
+    if (!user || !passwordOk) {
+      return NextResponse.json({ error: 'That email or password is not right.' }, { status: 401 })
+    }
+
+    const { token, tokenHash } = newSessionToken()
+    await store.createSession({ tokenHash, userId: user.id, expiresAt: sessionExpiry().toISOString() })
+
+    const res = NextResponse.json({ user: publicUser(user) })
+    res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions)
+    return res
+  } catch (err) {
+    // Database unreachable / credentials rejected — say so instead of a bare 500.
+    console.error('[auth/login] account store failed:', (err as Error).message)
+    return unavailable
   }
-
-  const { token, tokenHash } = newSessionToken()
-  await store.createSession({ tokenHash, userId: user.id, expiresAt: sessionExpiry().toISOString() })
-
-  const res = NextResponse.json({ user: publicUser(user) })
-  res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions)
-  return res
 }
