@@ -1,249 +1,317 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, X } from 'lucide-react'
+import { ChevronDown, Keyboard, Loader2, Mic, MicOff, RotateCcw, VolumeX, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { Speaker } from '@/lib/voice'
+import BodhaOrb, { type OrbState } from '@/components/BodhaOrb'
+import { BodhaWordmark } from '@/components/Brand'
+import type { Message } from '@/lib/types'
 
-export type LiveState = 'idle' | 'listening' | 'thinking' | 'speaking'
-
-interface LiveModeProps {
-  state: LiveState
-  speaker: Speaker
-  /** Where the student's attention should be: the chat, or the document panel. */
-  gaze?: 'center' | 'left' | 'right'
-  minimized: boolean
-  onMinimize: (minimized: boolean) => void
-  onClose: () => void
-  /** A short line describing what BODHA is doing. */
-  caption?: string
+export interface LiveControls {
+  listening: boolean
+  transcribing: boolean
+  interim: string
+  onToggleMic: () => void
+  handsFree: boolean
+  onToggleHandsFree: () => void
+  onStopSpeaking: () => void
+  onTypeInstead: () => void
+  onEnd: () => void
+  onMinimize: () => void
 }
 
-const LABELS: Record<LiveState, string> = {
-  idle: 'Ready when you are',
-  listening: 'Listening…',
-  thinking: 'Thinking…',
-  speaking: 'Explaining',
+interface LiveModeProps extends LiveControls {
+  state: OrbState
+  messages: Message[]
+  /** The answer as it streams in, if any. */
+  streaming: string
+  /** A one-line description of what BODHA is doing right now. */
+  caption: string
+  busy: boolean
+  error?: string | null
+  minimized: boolean
+  onExpand: () => void
 }
 
 /**
- * Live Mode — BODHA's face.
+ * Live Mode — talking with BODHA, not reading with it.
  *
- * A 2D SVG rig (eyes that blink and look around, a mouth driven by the real
- * amplitude of the voice) rather than a heavy 3D avatar: it stays crisp at any
- * size, costs nothing to load, and can live in a corner without stealing the
- * page. Framer Motion handles the transitions between states.
+ * This is deliberately NOT read-aloud: read-aloud stays on each message where
+ * it belongs. Live Mode is a room you step into when your hands are busy and
+ * your eyes are tired — one orb, one mic, and the conversation in your ears,
+ * with the transcript kept quietly underneath so nothing is lost.
  */
 export default function LiveMode({
   state,
-  speaker,
-  gaze = 'center',
-  minimized,
-  onMinimize,
-  onClose,
+  messages,
+  streaming,
   caption,
+  busy,
+  error,
+  minimized,
+  onExpand,
+  ...controls
 }: LiveModeProps) {
-  const [amplitude, setAmplitude] = useState(0)
-  const [blink, setBlink] = useState(false)
-  const ampRef = useRef(0)
+  const turns = useMemo(() => messages.slice(-8), [messages])
+  const [pinned, setPinned] = useState(true)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const endRef = useRef<HTMLDivElement | null>(null)
 
-  // Amplitude → mouth. Sampled on rAF while speaking, eased for a soft mouth.
   useEffect(() => {
-    let raf = 0
-    const tick = () => {
-      const next = state === 'speaking' ? speaker.getAmplitude() : 0
-      ampRef.current += (next - ampRef.current) * (next > ampRef.current ? 0.45 : 0.18)
-      setAmplitude(ampRef.current)
-      raf = requestAnimationFrame(tick)
+    if (pinned) endRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+  }, [turns, streaming, controls.interim, pinned])
+
+  const { onMinimize, onToggleMic } = controls
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onMinimize()
+      if (event.code === 'Space' && (event.target as HTMLElement)?.tagName === 'BODY') {
+        event.preventDefault()
+        onToggleMic()
+      }
     }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [speaker, state])
-
-  // Natural, slightly irregular blinking.
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>
-    const loop = () => {
-      setBlink(true)
-      setTimeout(() => setBlink(false), 120)
-      timer = setTimeout(loop, 2600 + Math.random() * 3800)
-    }
-    timer = setTimeout(loop, 1800)
-    return () => clearTimeout(timer)
-  }, [])
-
-  // Listening: a soft level meter from the mic so the face feels alive.
-  const [pulse, setPulse] = useState(0)
-  useEffect(() => {
-    if (state !== 'listening') return
-    const id = setInterval(() => setPulse(p => (p + 1) % 3), 420)
-    return () => clearInterval(id)
-  }, [state])
-
-  const eyeShift = gaze === 'left' ? -2.2 : gaze === 'right' ? 2.2 : 0
-  const mouthOpen = state === 'speaking' ? 1.2 + amplitude * 7 : state === 'listening' ? 2.2 : 1.4
-
-  const dot =
-    state === 'speaking' ? 'bg-primary' : state === 'listening' ? 'bg-emerald-500' : state === 'thinking' ? 'bg-amber-500' : 'bg-muted-foreground/50'
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onMinimize, onToggleMic])
 
   if (minimized) {
     return (
       <motion.button
         layout
-        initial={{ opacity: 0, y: 8, scale: 0.95 }}
+        initial={{ opacity: 0, y: 10, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 8, scale: 0.95 }}
+        exit={{ opacity: 0, y: 10, scale: 0.96 }}
         transition={{ type: 'spring', stiffness: 420, damping: 32 }}
-        onClick={() => onMinimize(false)}
-        title="Expand Live Mode"
-        className="group flex items-center gap-2 rounded-full border border-border/80 bg-surface/95 py-1.5 pl-2 pr-3 shadow-card backdrop-blur"
+        onClick={onExpand}
+        title="Return to Live Mode"
+        className="flex items-center gap-2.5 rounded-full border border-white/10 bg-[#191512]/95 py-1.5 pl-2.5 pr-4 shadow-lift backdrop-blur"
       >
-        <span className="relative flex h-6 w-9 items-center justify-center">
-          <Face eyes={eyeShift} blink={blink} mouthOpen={mouthOpen} compact />
+        <span className="h-7 w-7 overflow-hidden rounded-full">
+          <BodhaOrb state={state} />
         </span>
-        <span className={cn('h-1.5 w-1.5 rounded-full transition-colors', dot)} />
-        <span className="text-ui-sm text-muted-foreground group-hover:text-foreground">{LABELS[state]}</span>
+        <span className="text-ui font-medium text-[#F3E9DD]">Live Mode</span>
+        <span
+          className={cn(
+            'h-1.5 w-1.5 rounded-full',
+            state === 'speaking' ? 'bg-primary' : state === 'listening' ? 'bg-emerald-400' : 'bg-white/35',
+          )}
+        />
       </motion.button>
     )
   }
 
+  const micLabel = controls.listening ? 'Stop listening' : 'Start talking'
+
   return (
-    <motion.section
-      layout
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: 10 }}
-      transition={{ type: 'spring', stiffness: 400, damping: 34 }}
-      className="panel overflow-hidden"
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.22 }}
+      className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-[#161311]"
+      role="dialog"
+      aria-modal="true"
       aria-label="Live Mode"
     >
-      <header className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
-        <span className={cn('h-1.5 w-1.5 rounded-full', dot)} />
-        <span className="text-ui-sm font-medium text-foreground/80">Live Mode</span>
+      {/* Ambient warmth — the orb is the light source of this room. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 opacity-70"
+        style={{
+          background:
+            'radial-gradient(120% 80% at 50% 12%, rgba(193,99,59,0.22) 0%, rgba(193,99,59,0.06) 42%, rgba(22,19,17,0) 72%)',
+        }}
+      />
+
+      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      <header className="relative z-10 flex shrink-0 items-center gap-3 px-4 pt-safe-top pb-2 sm:px-6">
+        <div className="pointer-events-none flex items-center gap-2 text-[#F3E9DD]/90">
+          <BodhaWordmark size="sm" tone="inverse" />
+          <span className="text-ui-sm text-[#F3E9DD]/45">· Live</span>
+        </div>
         <div className="flex-1" />
-        <button type="button" onClick={() => onMinimize(true)} className="icon-btn-sm" title="Minimize" aria-label="Minimize Live Mode">
-          <ChevronDown className="h-4 w-4" strokeWidth={1.8} />
+        <button
+          type="button"
+          onClick={controls.onMinimize}
+          title="Minimise (Esc)"
+          aria-label="Minimise Live Mode"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[#F3E9DD]/70 transition-colors hover:bg-white/10 hover:text-[#F3E9DD]"
+        >
+          <ChevronDown className="h-[18px] w-[18px]" strokeWidth={1.8} />
         </button>
-        <button type="button" onClick={onClose} className="icon-btn-sm" title="Close" aria-label="Close Live Mode">
-          <X className="h-4 w-4" strokeWidth={1.8} />
+        <button
+          type="button"
+          onClick={controls.onEnd}
+          title="End the session"
+          aria-label="End Live Mode"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[#F3E9DD]/70 transition-colors hover:bg-white/10 hover:text-[#F3E9DD]"
+        >
+          <X className="h-[18px] w-[18px]" strokeWidth={1.8} />
         </button>
       </header>
 
-      <div className="relative flex flex-col items-center px-4 pb-4 pt-5">
-        {/* halo — quiet, state-tinted */}
-        <motion.span
-          aria-hidden
-          className="absolute left-1/2 top-[42px] -z-0 h-32 w-32 -translate-x-1/2 rounded-full"
-          animate={{
-            opacity: state === 'idle' ? 0.35 : 0.6,
-            scale: state === 'speaking' ? 1 + Math.min(amplitude, 0.5) * 0.18 : 1,
-            backgroundColor:
-              state === 'listening' ? 'rgba(16,185,129,0.10)' : state === 'thinking' ? 'rgba(245,158,11,0.10)' : 'rgba(193,99,59,0.10)',
-          }}
-          transition={{ duration: 0.35, ease: 'easeOut' }}
-        />
-
-        <Face eyes={eyeShift} blink={blink} mouthOpen={mouthOpen} pulse={state === 'listening' ? pulse : 0} />
+      {/* ── The orb ─────────────────────────────────────────────────────── */}
+      <div className="relative z-10 flex shrink-0 flex-col items-center px-6 pt-1">
+        <div className="relative h-[min(46vw,240px)] w-[min(46vw,240px)] sm:h-[280px] sm:w-[280px]">
+          <BodhaOrb state={state} />
+        </div>
 
         <AnimatePresence mode="wait">
           <motion.p
-            key={caption ?? LABELS[state]}
-            initial={{ opacity: 0, y: 4 }}
+            key={caption}
+            initial={{ opacity: 0, y: 5 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
+            exit={{ opacity: 0, y: -5 }}
             transition={{ duration: 0.18 }}
-            className="mt-4 text-center font-serif text-reading-sm italic text-muted-foreground"
+            className="mt-4 max-w-[34ch] text-center font-serif text-reading-sm text-[#F3E9DD]/70"
           >
-            {caption ?? LABELS[state]}
+            {caption}
           </motion.p>
         </AnimatePresence>
 
-        {(state === 'speaking' || state === 'listening') && (
-          <div className="mt-3 flex h-4 items-end gap-[3px]" aria-hidden>
-            {[0, 1, 2, 3, 4].map(i => (
-              <motion.span
-                key={i}
-                className="w-[3px] rounded-full bg-primary/70"
-                animate={{ height: `${4 + (i === 2 ? 12 : i === 1 || i === 3 ? 8 : 5) * (0.4 + amplitude)}px` }}
-                transition={{ duration: 0.12 }}
-              />
-            ))}
-          </div>
+        {controls.interim && (
+          <p className="mt-2 max-w-[36ch] text-center font-serif text-reading-sm italic text-[#F3E9DD]/45">
+            “{controls.interim}”
+          </p>
         )}
       </div>
-    </motion.section>
-  )
-}
 
-/**
- * The face itself. Kept as plain SVG so it scales and prints crisply, and so
- * the eyes/mouth can be animated without any image assets.
- */
-function Face({
-  eyes,
-  blink,
-  mouthOpen,
-  compact = false,
-  pulse = 0,
-}: {
-  eyes: number
-  blink: boolean
-  mouthOpen: number
-  compact?: boolean
-  pulse?: number
-}) {
-  const w = compact ? 38 : 132
-  const h = compact ? 26 : 92
-  const eyeY = compact ? 10 : 34
-  const eyeRx = compact ? 2.4 : 6.4
+      {/* ── Transcript ──────────────────────────────────────────────────── */}
+      <div
+        ref={scrollRef}
+        onScroll={event => {
+          const el = event.currentTarget
+          setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 56)
+        }}
+        className="scrollbar-quiet relative z-10 mx-auto mt-4 min-h-0 w-full max-w-2xl flex-1 overflow-y-auto px-4 sm:px-6"
+        aria-live="polite"
+        aria-label="Live transcript"
+      >
+        <div className="space-y-2.5 pb-4">
+          {!turns.length && !streaming && !busy && (
+            <p className="pt-4 text-center font-serif text-reading-sm text-[#F3E9DD]/40">
+              Tap the mic and just talk — I will answer out loud. Everything we say is saved to this chat.
+            </p>
+          )}
 
-  return (
-    <svg viewBox="0 0 160 112" width={w} height={h} className="relative z-[1]" aria-hidden>
-      {/* head */}
-      <ellipse cx="80" cy="52" rx="58" ry="50" fill="rgb(var(--card))" stroke="rgb(var(--border))" strokeWidth="1.5" />
+          {turns.map(turn => (
+            <div key={turn.id} className={cn('flex', turn.role === 'user' ? 'justify-end' : 'justify-start')}>
+              <div
+                className={cn(
+                  'max-w-[86%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 font-serif text-reading-sm leading-relaxed',
+                  turn.role === 'user'
+                    ? 'rounded-br-md bg-primary/22 text-[#F8EFE4]'
+                    : 'rounded-bl-md bg-white/[0.06] text-[#EFE5D8]/90',
+                )}
+              >
+                {turn.content}
+              </div>
+            </div>
+          ))}
 
-      {/* listening: pulse rings */}
-      {pulse > 0 && (
-        <ellipse
-          cx="80"
-          cy="52"
-          rx={62 + pulse * 2.5}
-          ry={54 + pulse * 2.5}
-          fill="none"
-          stroke="rgb(16 185 129)"
-          strokeOpacity={0.35 - pulse * 0.1}
-          strokeWidth="1.5"
-        />
-      )}
+          {streaming && (
+            <div className="flex justify-start">
+              <div className="max-w-[86%] whitespace-pre-wrap rounded-2xl rounded-bl-md bg-white/[0.06] px-3.5 py-2 font-serif text-reading-sm leading-relaxed text-[#EFE5D8]/90">
+                {streaming}
+                <span className="ml-0.5 inline-block h-3.5 w-[2px] translate-y-[1px] animate-blink-caret rounded-sm bg-primary" />
+              </div>
+            </div>
+          )}
 
-      {/* eyes */}
-      <g transform={`translate(${eyes} 0)`}>
-        <ellipse cx="58" cy={eyeY} rx={eyeRx} ry={blink ? eyeRx * 0.12 : eyeRx * 1.12} fill="rgb(var(--foreground))" />
-        <ellipse cx="102" cy={eyeY} rx={eyeRx} ry={blink ? eyeRx * 0.12 : eyeRx * 1.12} fill="rgb(var(--foreground))" />
-        {!blink && <circle cx="60.4" cy={eyeY - 2.4} r={compact ? 0.9 : 2.1} fill="rgb(var(--background))" opacity="0.85" />}
-        {!blink && <circle cx="104.4" cy={eyeY - 2.4} r={compact ? 0.9 : 2.1} fill="rgb(var(--background))" opacity="0.85" />}
-      </g>
+          {busy && !streaming && (
+            <p className="flex items-center gap-2 pl-1 text-ui-sm text-[#F3E9DD]/45">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.8} />
+              Thinking…
+            </p>
+          )}
 
-      {/* brows — a small tell of attention */}
-      <path
-        d="M48 22 q10 -5 20 -1 M92 21 q10 -4 20 1"
-        stroke="rgb(var(--muted-foreground))"
-        strokeOpacity="0.55"
-        strokeWidth="2"
-        strokeLinecap="round"
-        fill="none"
-      />
+          {error && (
+            <p className="rounded-xl border border-red-400/25 bg-red-500/10 px-3.5 py-2 text-ui text-red-200/90">{error}</p>
+          )}
+          <div ref={endRef} />
+        </div>
+      </div>
 
-      {/* mouth — driven by voice amplitude */}
-      <path
-        d={`M62 68 q18 ${mouthOpen * 1.6} 36 0`}
-        stroke="rgb(var(--foreground))"
-        strokeOpacity="0.72"
-        strokeWidth={compact ? 1.8 : 2.6}
-        strokeLinecap="round"
-        fill="none"
-      />
-    </svg>
+      {/* ── Controls ────────────────────────────────────────────────────── */}
+      <footer className="relative z-10 shrink-0 border-t border-white/[0.07] px-4 pb-safe pt-3 sm:px-6">
+        <div className="mx-auto flex w-full max-w-2xl items-center gap-2 pb-3">
+          <button
+            type="button"
+            onClick={controls.onToggleHandsFree}
+            aria-pressed={controls.handsFree}
+            className={cn(
+              'inline-flex h-11 items-center gap-2 rounded-full border px-3.5 text-ui-sm transition-colors',
+              controls.handsFree
+                ? 'border-primary/50 bg-primary/15 text-[#F8EFE4]'
+                : 'border-white/10 text-[#F3E9DD]/60 hover:text-[#F3E9DD]',
+            )}
+            title={
+              controls.handsFree
+                ? 'Hands-free on: I listen again as soon as I finish answering'
+                : 'Hands-free off: tap the mic for each question'
+            }
+          >
+            <RotateCcw className="h-4 w-4" strokeWidth={1.8} />
+            <span className="hidden sm:inline">Hands-free</span>
+          </button>
+
+          <div className="flex-1" />
+
+          {/* The one big control: talk. */}
+          <button
+            type="button"
+            onClick={controls.onToggleMic}
+            disabled={controls.transcribing}
+            aria-label={micLabel}
+            title={`${micLabel} (Space)`}
+            className={cn(
+              'relative inline-flex h-16 w-16 items-center justify-center rounded-full transition-transform active:scale-95',
+              controls.listening
+                ? 'bg-red-500/90 text-white'
+                : 'bg-primary text-primary-foreground hover:scale-[1.03]',
+              controls.transcribing && 'opacity-70',
+            )}
+          >
+            {controls.transcribing ? (
+              <Loader2 className="h-6 w-6 animate-spin" strokeWidth={1.9} />
+            ) : controls.listening ? (
+              <MicOff className="h-6 w-6" strokeWidth={1.9} />
+            ) : (
+              <Mic className="h-6 w-6" strokeWidth={1.9} />
+            )}
+            {controls.listening && (
+              <span className="absolute inset-0 -z-10 animate-ping rounded-full bg-red-500/30" aria-hidden />
+            )}
+          </button>
+
+          <div className="flex-1" />
+
+          <button
+            type="button"
+            onClick={controls.onStopSpeaking}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/10 text-[#F3E9DD]/60 transition-colors hover:text-[#F3E9DD]"
+            title="Stop BODHA speaking"
+            aria-label="Stop BODHA speaking"
+          >
+            <VolumeX className="h-[18px] w-[18px]" strokeWidth={1.8} />
+          </button>
+
+          <button
+            type="button"
+            onClick={controls.onTypeInstead}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/10 text-[#F3E9DD]/60 transition-colors hover:text-[#F3E9DD]"
+            title="Type instead"
+            aria-label="Type instead of talking"
+          >
+            <Keyboard className="h-[18px] w-[18px]" strokeWidth={1.8} />
+          </button>
+        </div>
+
+        <p className="pb-3 text-center text-ui-xs text-[#F3E9DD]/30">
+          Space starts and stops the mic · Esc minimises · your words stay on your account
+        </p>
+      </footer>
+    </motion.div>
   )
 }

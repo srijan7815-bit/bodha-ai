@@ -9,7 +9,9 @@ import { authFetch } from '@/lib/firebase/client-token'
 import { useSpeaker, useDictation } from '@/lib/voice'
 import Markdown from '@/components/Markdown'
 import Composer from '@/components/Composer'
-import LiveMode, { type LiveState } from '@/components/LiveMode'
+import LiveMode from '@/components/LiveMode'
+import type { OrbState } from '@/components/BodhaOrb'
+import { resumeOrbAudio } from '@/lib/orbAudio'
 import DocPicker from '@/components/DocPicker'
 import { announceChatsChanged } from '@/components/AppShell'
 import type { Chat, DocumentMeta, Message } from '@/lib/types'
@@ -54,12 +56,28 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   const [liveMinimized, setLiveMinimized] = useState(false)
   const [readingId, setReadingId] = useState<string | null>(null)
   const [atBottom, setAtBottom] = useState(true)
+  const [handsFree, setHandsFree] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   const speaker = useSpeaker()
-  const dictation = useDictation(text => setDraft(prev => (prev ? `${prev} ${text}` : text)))
+
+  // Live Mode needs to reach into the stream loop without rebuilding it, and
+  // dictation must know whether a transcript should be sent or typed.
+  const liveOpenRef = useRef(false)
+  const handsFreeRef = useRef(false)
+  const speakAnswerRef = useRef<((text: string) => void) | null>(null)
+
+  const dictation = useDictation(text => {
+    if (liveOpenRef.current) {
+      // Spoken question in Live Mode: send it the moment it lands.
+      void askRef.current?.(text)
+      return
+    }
+    setDraft(prev => (prev ? `${prev} ${text}` : text))
+  })
+  const askRef = useRef<((text: string) => Promise<void>) | null>(null)
 
   // ─── Draft autosave (restore anything under 20 minutes old) ───────────────
   useEffect(() => {
@@ -140,6 +158,41 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   // Stop speaking when leaving the page.
   useEffect(() => () => speaker.stop(), [speaker])
 
+  useEffect(() => {
+    liveOpenRef.current = liveOpen && !liveMinimized
+    handsFreeRef.current = handsFree
+  }, [liveOpen, liveMinimized, handsFree])
+
+  // In Live Mode the answer is spoken as soon as it is complete; hands-free
+  // opens the mic again the moment BODHA stops talking, so a student can revise
+  // out loud without touching the screen.
+  useEffect(() => {
+    speakAnswerRef.current = (text: string) => {
+      if (!liveOpenRef.current || !text.trim()) return
+      void speaker.speak(text, {
+        onDone: () => {
+          if (handsFreeRef.current) dictation.start()
+        },
+      })
+    }
+  }, [speaker, dictation.start])
+
+  // Opening Live Mode starts listening — it is a conversation, not a form.
+  const autoListenRef = useRef(false)
+  useEffect(() => {
+    if (!liveOpen) {
+      autoListenRef.current = false
+      return
+    }
+    if (liveMinimized || autoListenRef.current) return
+    autoListenRef.current = true
+    const id = setTimeout(() => {
+      void resumeOrbAudio()
+      dictation.start()
+    }, 550)
+    return () => clearTimeout(id)
+  }, [liveOpen, liveMinimized, dictation.start])
+
   // ─── Streaming ────────────────────────────────────────────────────────────
   const runStream = useCallback(
     async (targetChatId: string, body: { content?: string; regenerate?: boolean }, optimistic?: Message) => {
@@ -202,7 +255,11 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
             } else if (frame.t === 'notice' && frame.v) {
               setNotice(frame.v)
             } else if (frame.t === 'done') {
-              if (frame.message) setMessages(prev => [...prev, frame.message as Message])
+              if (frame.message) {
+                const finished = frame.message as Message
+                setMessages(prev => [...prev, finished])
+                speakAnswerRef.current?.(finished.content)
+              }
               setStreaming('')
             } else if (frame.t === 'error') {
               if (frame.errorMessage) setError(frame.errorMessage)
@@ -266,6 +323,55 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
     await runStream(targetId, { content: text }, optimistic)
   }, [busy, chatId, clearDraft, dictation, doc, draft, runStream, speaker])
 
+  /** Same path as typing, for a question that arrived by voice. */
+  const ask = useCallback(
+    async (text: string) => {
+      const clean = text.trim()
+      if (!clean || busy) return
+      setDraft(clean)
+      // Let the composer reflect it, then send through the normal flow.
+      await new Promise(resolve => setTimeout(resolve, 0))
+      setDraft('')
+      clearDraft()
+      dictation.stop()
+      speaker.stop()
+      setAtBottom(true)
+
+      let targetId = chatId
+      try {
+        if (!targetId) {
+          const res = await authFetch('/api/chats', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: deriveTitle(clean), documentId: doc?.id ?? null }),
+          })
+          if (!res.ok) throw new Error('create failed')
+          const data = await res.json()
+          targetId = data.chat.id as string
+          setChatId(targetId)
+          setTitle(data.chat.title as string)
+          window.history.replaceState(null, '', `/chat/${targetId}`)
+          announceChatsChanged()
+        }
+      } catch {
+        setError('I could not start a new conversation. Please try again.')
+        return
+      }
+
+      const optimistic: Message = {
+        id: `local-${Date.now()}`,
+        chatId: targetId,
+        role: 'user',
+        content: clean,
+        createdAt: new Date().toISOString(),
+      }
+      setMessages(prev => [...prev, optimistic])
+      await runStream(targetId, { content: clean }, optimistic)
+    },
+    [busy, chatId, clearDraft, dictation, doc, runStream, speaker],
+  )
+  askRef.current = ask
+
   const regenerate = useCallback(async () => {
     if (!chatId || busy) return
     speaker.stop()
@@ -292,14 +398,30 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         return
       }
       setReadingId(message.id)
-      setLiveOpen(true)
-      setLiveMinimized(false)
       void speaker.speak(message.content).finally(() => setReadingId(current => (current === message.id ? null : current)))
     },
     [readingId, speaker],
   )
 
-  const liveState: LiveState = busy ? 'thinking' : speaker.speaking ? 'speaking' : dictation.listening ? 'listening' : 'idle'
+  const orbState: OrbState = busy
+    ? 'thinking'
+    : speaker.speaking
+      ? 'speaking'
+      : dictation.listening
+        ? 'listening'
+        : 'idle'
+
+  const liveCaption = busy
+    ? 'Thinking about that…'
+    : speaker.speaking
+      ? 'Answering out loud'
+      : dictation.transcribing
+        ? 'Writing down what you said…'
+        : dictation.listening
+          ? 'Listening — take your time'
+          : error
+            ? 'Something went wrong just now'
+            : 'Tap the mic and ask me anything'
   const lastAssistantId = [...messages].reverse().find(m => m.role === 'assistant')?.id
 
   return (
@@ -323,11 +445,14 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
           <button
             type="button"
             onClick={() => {
-              setLiveOpen(open => !open)
+              const next = !(liveOpen && !liveMinimized)
+              setLiveOpen(next)
               setLiveMinimized(false)
+              if (next) void resumeOrbAudio()
+              else speaker.stop()
             }}
             aria-pressed={liveOpen}
-            title="Live Mode — talk with BODHA's face"
+            title="Live Mode — talk with BODHA out loud"
             className={cn(
               'inline-flex h-8 items-center gap-1.5 rounded-full border px-2.5 text-ui-sm transition-colors',
               liveOpen
@@ -434,22 +559,6 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         {/* ── Composer ───────────────────────────────────────────────────── */}
         <div className="relative z-10 shrink-0 border-t border-border/60 bg-background/95 pb-safe backdrop-blur">
           <div className="mx-auto w-full max-w-read px-3 py-3 md:px-6">
-            {/* Live Mode on phones: docked above the field */}
-            <AnimatePresence>
-              {liveOpen && !liveMinimized && (
-                <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="mb-3 md:hidden">
-                  <LiveMode
-                    state={liveState}
-                    speaker={speaker}
-                    gaze={doc ? 'right' : 'center'}
-                    minimized={false}
-                    onMinimize={setLiveMinimized}
-                    onClose={() => setLiveOpen(false)}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
-
             <Composer
               value={draft}
               onChange={setDraft}
@@ -462,54 +571,45 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
             />
           </div>
         </div>
-
-        {/* Minimised live bubble — stays put so BODHA is always reachable */}
-        <AnimatePresence>
-          {liveOpen && liveMinimized && (
-            <div className="pointer-events-auto fixed bottom-28 right-3 z-30 md:bottom-6 md:right-6">
-              <LiveMode
-                state={liveState}
-                speaker={speaker}
-                gaze={doc ? 'right' : 'center'}
-                minimized
-                onMinimize={setLiveMinimized}
-                onClose={() => setLiveOpen(false)}
-              />
-            </div>
-          )}
-        </AnimatePresence>
       </div>
 
-      {/* ── Desktop live rail ──────────────────────────────────────────────── */}
+      {/* ── Live Mode — a full room for talking, not reading ───────────── */}
       <AnimatePresence>
-        {liveOpen && !liveMinimized && (
-          <motion.aside
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 280, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            transition={{ type: 'spring', stiffness: 380, damping: 34 }}
-            className="hidden shrink-0 overflow-hidden border-l border-border/60 bg-surface/40 md:block"
-          >
-            <div className="w-[280px] p-3">
-              <LiveMode
-                state={liveState}
-                speaker={speaker}
-                gaze={doc ? 'right' : 'center'}
-                minimized={false}
-                onMinimize={setLiveMinimized}
-                onClose={() => setLiveOpen(false)}
-                caption={
-                  busy
-                    ? 'Thinking about your question…'
-                    : speaker.speaking
-                      ? 'Reading the answer aloud'
-                      : dictation.listening
-                        ? 'Listening to you — go ahead'
-                        : 'Ask me anything, or tap the mic'
-                }
-              />
-            </div>
-          </motion.aside>
+        {liveOpen && (
+          <LiveMode
+            key="live-mode"
+            state={orbState}
+            messages={messages}
+            streaming={streaming}
+            caption={liveCaption}
+            busy={busy}
+            error={error}
+            minimized={liveMinimized}
+            onExpand={() => setLiveMinimized(false)}
+            listening={dictation.listening}
+            transcribing={dictation.transcribing}
+            interim={dictation.interim}
+            onToggleMic={() => {
+              void resumeOrbAudio()
+              if (dictation.listening) dictation.stop()
+              else dictation.start()
+            }}
+            handsFree={handsFree}
+            onToggleHandsFree={() => setHandsFree(value => !value)}
+            onStopSpeaking={() => speaker.stop()}
+            onTypeInstead={() => {
+              setLiveOpen(false)
+              speaker.stop()
+              dictation.stop()
+            }}
+            onEnd={() => {
+              setLiveOpen(false)
+              setLiveMinimized(false)
+              speaker.stop()
+              dictation.stop()
+            }}
+            onMinimize={() => setLiveMinimized(true)}
+          />
         )}
       </AnimatePresence>
 

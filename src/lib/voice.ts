@@ -1,28 +1,35 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { attachMic, buildEnvelope, currentLevel, detachMic, resumeOrbAudio, setVoiceEnvelope, trackVoicePlayback } from '@/lib/orbAudio'
+import { toWav } from '@/lib/audio'
 
 /**
  * Voice helpers.
  *
- * Speech runs through our own server routes (/api/tts, /api/stt) so the Fish
- * Audio key stays on the server and the browser never talks to Fish directly.
- * Free-tier quotas run out, so every path degrades gracefully:
+ * Speech runs through our own server routes (/api/tts, /api/stt) so the keys
+ * stay on the server and the browser never talks to a vendor directly. Two
+ * rules keep it working:
  *
- *   TTS: Fish Audio  →  browser SpeechSynthesis
- *   STT: Fish Audio  →  browser SpeechRecognition (Chrome/Edge/Safari)
+ *   • Playback always lives on the normal <audio> path. Nothing is ever routed
+ *     through Web Audio, because a suspended graph makes an element silent —
+ *     the animation would then be the reason nobody can hear BODHA. The
+ *     envelope for lip-sync is measured offline from the same bytes instead.
+ *   • Every layer degrades in a useful direction:
+ *       TTS: Fish Audio → NVIDIA Magpie → the browser's own voice
+ *       STT: NVIDIA Parakeet → Fish Audio → the browser's recogniser
  */
 
-export type DictationError = 'denied' | 'unsupported' | 'failed' | 'no-credit' | 'no-speech' | null
+export type DictationError = 'denied' | 'unsupported' | 'failed' | 'no-speech' | 'no-credit' | null
 
 export interface Speaker {
-  speak: (text: string) => Promise<void>
+  speak: (text: string, opts?: { onDone?: () => void }) => Promise<void>
   stop: () => void
   speaking: boolean
   supported: boolean
-  /** 0…1 loudness of the voice right now — drives the live-mode lip sync. */
+  /** 0…1 loudness of the voice right now — drives the Live Mode orb. */
   getAmplitude: () => number
-  /** True while the browser voice is speaking rather than Fish Audio. */
+  /** True while the browser's own voice is doing the talking. */
   usingBrowserVoice: boolean
 }
 
@@ -52,101 +59,125 @@ export function useSpeaker(): Speaker {
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const urlRef = useRef<string | null>(null)
-  const ctxRef = useRef<AudioContext | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
-  // Typed off the DOM signature (Uint8Array<ArrayBuffer>) so it stays valid
-  // across TypeScript versions.
-  const dataRef = useRef<Uint8Array<ArrayBuffer> | null>(null)
   const rafRef = useRef<number | null>(null)
+  const onDoneRef = useRef<(() => void) | null>(null)
+  const finishedRef = useRef(false)
 
-  const teardownAudio = useCallback(() => {
+  const teardown = useCallback(() => {
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current)
       rafRef.current = null
     }
-    if (audioRef.current) {
-      audioRef.current.onended = null
-      audioRef.current.onerror = null
-      audioRef.current.pause()
+    const audio = audioRef.current
+    if (audio) {
+      audio.onended = null
+      audio.onerror = null
+      audio.onpause = null
+      try {
+        audio.pause()
+      } catch {}
       audioRef.current = null
     }
     if (urlRef.current) {
       URL.revokeObjectURL(urlRef.current)
       urlRef.current = null
     }
-    analyserRef.current = null
-    dataRef.current = null
+    setVoiceEnvelope(null)
   }, [])
 
+  /** One completion path, so `onDone` can never fire twice. */
+  const finish = useCallback(() => {
+    if (finishedRef.current) return
+    finishedRef.current = true
+    teardown()
+    setSpeaking(false)
+    setUsingBrowserVoice(false)
+    const done = onDoneRef.current
+    onDoneRef.current = null
+    done?.()
+  }, [teardown])
+
   const stop = useCallback(() => {
-    teardownAudio()
+    onDoneRef.current = null
+    finishedRef.current = true
+    teardown()
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel()
     setSpeaking(false)
     setUsingBrowserVoice(false)
-  }, [teardownAudio])
+  }, [teardown])
 
   useEffect(() => {
-    setSupported(typeof window !== 'undefined' && ('speechSynthesis' in window || typeof Audio !== 'undefined'))
+    setSupported(
+      typeof window !== 'undefined' &&
+        ('speechSynthesis' in window || typeof Audio !== 'undefined'),
+    )
     return () => {
-      teardownAudio()
-      ctxRef.current?.close().catch(() => {})
+      teardown()
     }
-  }, [teardownAudio])
+  }, [teardown])
 
-  /** Browser voice — the always-available fallback. */
-  const speakWithBrowser = useCallback((text: string) => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      setSpeaking(false)
-      return
-    }
-    const clean = stripMarkdownForSpeech(text)
-    const chunks = clean.match(/[^.!?…]+[.!?…]*\s*/g) ?? [clean]
-    const pieces: string[] = []
-    let buf = ''
-    for (const c of chunks) {
-      if ((buf + c).length > 200) {
-        if (buf.trim()) pieces.push(buf.trim())
-        buf = c
-      } else buf += c
-    }
-    if (buf.trim()) pieces.push(buf.trim())
+  /** The always-available fallback: whatever voice the device already has. */
+  const speakWithBrowser = useCallback(
+    (text: string) => {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+        finish()
+        return
+      }
+      const clean = stripMarkdownForSpeech(text)
+      if (!clean) {
+        finish()
+        return
+      }
+      const sentences = clean.match(/[^.!?…]+[.!?…]*\s*/g) ?? [clean]
+      const chunks: string[] = []
+      let buffer = ''
+      for (const sentence of sentences) {
+        if ((buffer + sentence).length > 200) {
+          if (buffer.trim()) chunks.push(buffer.trim())
+          buffer = sentence
+        } else buffer += sentence
+      }
+      if (buffer.trim()) chunks.push(buffer.trim())
 
-    const voices = window.speechSynthesis.getVoices()
-    const preferred =
-      voices.find(v => /en[-_](GB|US)/i.test(v.lang) && /samantha|serena|aria|jenny|female/i.test(v.name)) ??
-      voices.find(v => /en[-_]/i.test(v.lang)) ??
-      null
+      const voices = window.speechSynthesis.getVoices()
+      const preferred =
+        voices.find(v => /en[-_](GB|US)/i.test(v.lang) && /samantha|serena|aria|jenny|zira/i.test(v.name)) ??
+        voices.find(v => /en[-_]/i.test(v.lang)) ??
+        null
 
-    setUsingBrowserVoice(true)
-    let remaining = pieces.length
-    pieces.forEach(piece => {
-      const u = new SpeechSynthesisUtterance(piece)
-      u.rate = 0.98
-      u.pitch = 1
-      if (preferred) u.voice = preferred
-      u.onend = () => {
-        remaining -= 1
-        if (remaining <= 0) {
-          setSpeaking(false)
-          setUsingBrowserVoice(false)
+      setUsingBrowserVoice(true)
+      setSpeaking(true)
+      let remaining = chunks.length || 1
+      if (!chunks.length) {
+        finish()
+        return
+      }
+      chunks.forEach(chunk => {
+        const utterance = new SpeechSynthesisUtterance(chunk)
+        utterance.rate = 0.98
+        if (preferred) utterance.voice = preferred
+        utterance.onend = () => {
+          remaining -= 1
+          if (remaining <= 0) finish()
         }
-      }
-      u.onerror = () => {
-        setSpeaking(false)
-        setUsingBrowserVoice(false)
-      }
-      window.speechSynthesis.speak(u)
-    })
-    setSpeaking(pieces.length > 0)
-  }, [])
+        utterance.onerror = () => finish()
+        window.speechSynthesis.speak(utterance)
+      })
+    },
+    [finish],
+  )
 
   const speak = useCallback(
-    async (rawText: string) => {
-      const text = stripMarkdownForSpeech(rawText).slice(0, 1200)
+    async (rawText: string, opts?: { onDone?: () => void }) => {
+      const text = stripMarkdownForSpeech(rawText).slice(0, 1400)
       if (!text) return
       stop()
+      finishedRef.current = false
+      onDoneRef.current = opts?.onDone ?? null
 
-      // 1. Fish Audio through our server route.
+      // A gesture is on the stack (the student tapped), so this will stick.
+      void resumeOrbAudio()
+
       try {
         const res = await fetch('/api/tts', {
           method: 'POST',
@@ -154,72 +185,73 @@ export function useSpeaker(): Speaker {
           body: JSON.stringify({ text }),
         })
         if (res.ok) {
-          const blob = await res.blob()
-          const url = URL.createObjectURL(blob)
-          urlRef.current = url
-          const audio = new Audio(url)
-          audioRef.current = audio
+          const bytes = await res.arrayBuffer()
+          if (bytes.byteLength > 1000) {
+            // Envelope for the orb — decoded separately, never routed through
+            // the audio element's own output.
+            void buildEnvelope(bytes).then(envelope => {
+              if (audioRef.current) setVoiceEnvelope(envelope)
+            })
 
-          // Amplitude graph for the live-mode mouth.
-          try {
-            const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-            if (Ctor && !ctxRef.current) ctxRef.current = new Ctor()
-            const ctx = ctxRef.current
-            if (ctx) {
-              await ctx.resume().catch(() => {})
-              const source = ctx.createMediaElementSource(audio)
-              const analyser = ctx.createAnalyser()
-              analyser.fftSize = 512
-              analyser.smoothingTimeConstant = 0.72
-              source.connect(analyser)
-              analyser.connect(ctx.destination)
-              analyserRef.current = analyser
-              dataRef.current = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount))
+            const url = URL.createObjectURL(new Blob([bytes], { type: res.headers.get('content-type') || 'audio/mpeg' }))
+            urlRef.current = url
+            const audio = new Audio(url)
+            audio.preload = 'auto'
+            audio.crossOrigin = 'anonymous'
+            audioRef.current = audio
+
+            audio.onended = () => finish()
+            audio.onerror = () => {
+              // A codec the browser refuses: hand over to the device voice.
+              if (!finishedRef.current) {
+                teardown()
+                speakWithBrowser(text)
+              }
             }
-          } catch {
-            // Amplitude is a nicety; playback continues without it.
-          }
 
-          audio.onended = () => {
-            setSpeaking(false)
-            teardownAudio()
+            setSpeaking(true)
+            setUsingBrowserVoice(false)
+
+            const tick = () => {
+              const el = audioRef.current
+              if (!el) return
+              trackVoicePlayback(el.currentTime, !el.paused && !el.ended)
+              rafRef.current = requestAnimationFrame(tick)
+            }
+            rafRef.current = requestAnimationFrame(tick)
+
+            try {
+              await audio.play()
+            } catch {
+              // Autoplay refused (no gesture reached us) — the browser voice
+              // still speaks, because speechSynthesis is allowed after any tap.
+              if (!finishedRef.current) {
+                teardown()
+                speakWithBrowser(text)
+              }
+            }
+            return
           }
-          audio.onerror = () => {
-            setSpeaking(false)
-            teardownAudio()
-          }
-          setSpeaking(true)
-          await audio.play().catch(() => {
-            setSpeaking(false)
-            teardownAudio()
-          })
-          return
+        } else {
+          console.warn('[voice] server TTS unavailable:', res.status)
         }
-      } catch {
-        // fall through to the browser voice
+      } catch (err) {
+        console.warn('[voice] TTS request failed:', (err as Error).message)
       }
 
-      // 2. Browser voice.
       speakWithBrowser(text)
     },
-    [speakWithBrowser, stop, teardownAudio],
+    [finish, speakWithBrowser, stop, teardown],
   )
 
-  const getAmplitude = useCallback(() => {
-    const analyser = analyserRef.current
-    const data = dataRef.current
-    if (!analyser || !data) return 0
-    analyser.getByteTimeDomainData(data)
-    let sum = 0
-    for (let i = 0; i < data.length; i++) {
-      const v = (data[i] - 128) / 128
-      sum += v * v
-    }
-    const rms = Math.sqrt(sum / data.length)
-    return Math.min(1, rms * 3.2)
-  }, [])
-
-  return { speak, stop, speaking, supported, getAmplitude, usingBrowserVoice }
+  return {
+    speak,
+    stop,
+    speaking,
+    supported,
+    getAmplitude: currentLevel,
+    usingBrowserVoice,
+  }
 }
 
 export interface Dictation {
@@ -229,8 +261,9 @@ export interface Dictation {
   error: DictationError
   supported: boolean
   usingBrowser: boolean
-  toggle: () => void
+  start: () => void
   stop: () => void
+  toggle: () => void
   clearError: () => void
 }
 
@@ -248,13 +281,17 @@ interface RecognitionLike {
 
 function speechRecognitionCtor(): (new () => RecognitionLike) | null {
   if (typeof window === 'undefined') return null
-  const w = window as unknown as { SpeechRecognition?: new () => RecognitionLike; webkitSpeechRecognition?: new () => RecognitionLike }
+  const w = window as unknown as {
+    SpeechRecognition?: new () => RecognitionLike
+    webkitSpeechRecognition?: new () => RecognitionLike
+  }
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null
 }
 
 /**
- * Dictation: record with MediaRecorder → /api/stt (Fish Audio transcribe-1).
- * If the server has no credit, it falls back to the browser's own recognition.
+ * Dictation: record with MediaRecorder → /api/stt (NVIDIA Parakeet).
+ * If the server has no working provider, the browser's own recogniser takes
+ * over mid-session instead of leaving the student with a dead button.
  */
 export function useDictation(onFinal: (text: string) => void): Dictation {
   const [listening, setListening] = useState(false)
@@ -267,7 +304,9 @@ export function useDictation(onFinal: (text: string) => void): Dictation {
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const streamRef = useRef<MediaStream | null>(null)
+  const detachRef = useRef<(() => void) | null>(null)
   const recognitionRef = useRef<RecognitionLike | null>(null)
+  const stoppingRef = useRef(false)
   const finalRef = useRef(onFinal)
   finalRef.current = onFinal
 
@@ -277,8 +316,11 @@ export function useDictation(onFinal: (text: string) => void): Dictation {
         (typeof navigator.mediaDevices?.getUserMedia === 'function' || !!speechRecognitionCtor()),
     )
     return () => {
-      recorderRef.current?.stop()
+      try {
+        recorderRef.current?.stop()
+      } catch {}
       streamRef.current?.getTracks().forEach(t => t.stop())
+      detachRef.current?.()
       recognitionRef.current?.abort()
     }
   }, [])
@@ -290,16 +332,16 @@ export function useDictation(onFinal: (text: string) => void): Dictation {
       return false
     }
     try {
-      const rec = new Ctor()
-      recognitionRef.current = rec
-      rec.lang = navigator.language || 'en-US'
-      rec.continuous = true
-      rec.interimResults = true
+      const recognition = new Ctor()
+      recognitionRef.current = recognition
+      recognition.lang = navigator.language || 'en-US'
+      recognition.continuous = true
+      recognition.interimResults = true
       let finalText = ''
-      rec.onresult = e => {
+      recognition.onresult = event => {
         let live = ''
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const result = e.results[i]
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i]
           if (result.isFinal) finalText += result[0].transcript
           else live += result[0].transcript
         }
@@ -309,14 +351,23 @@ export function useDictation(onFinal: (text: string) => void): Dictation {
           finalText = ''
         }
       }
-      rec.onerror = e => {
-        setError(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? 'denied' : e.error === 'no-speech' ? 'no-speech' : 'failed')
-        setListening(false)
+      recognition.onerror = event => {
+        setError(
+          event.error === 'not-allowed' || event.error === 'service-not-allowed'
+            ? 'denied'
+            : event.error === 'no-speech'
+              ? 'no-speech'
+              : 'failed',
+        )
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          recognitionRef.current = null
+          setListening(false)
+        }
       }
-      rec.onend = () => {
-        if (recognitionRef.current === rec) {
+      recognition.onend = () => {
+        if (recognitionRef.current === recognition) {
           try {
-            rec.start()
+            recognition.start()
           } catch {
             recognitionRef.current = null
             setListening(false)
@@ -324,7 +375,7 @@ export function useDictation(onFinal: (text: string) => void): Dictation {
         }
       }
       setError(null)
-      rec.start()
+      recognition.start()
       setUsingBrowser(true)
       setListening(true)
       return true
@@ -335,18 +386,24 @@ export function useDictation(onFinal: (text: string) => void): Dictation {
   }, [])
 
   const stop = useCallback(() => {
+    stoppingRef.current = true
     recognitionRef.current?.stop()
     recognitionRef.current = null
-    recorderRef.current?.stop()
+    try {
+      recorderRef.current?.stop()
+    } catch {}
     recorderRef.current = null
     streamRef.current?.getTracks().forEach(t => t.stop())
     streamRef.current = null
+    detachRef.current?.()
+    detachRef.current = null
     setListening(false)
     setInterim('')
   }, [])
 
   const start = useCallback(async () => {
     setError(null)
+    setUsingBrowser(false)
     if (typeof navigator === 'undefined' || typeof navigator.mediaDevices?.getUserMedia !== 'function') {
       startBrowserDictation()
       return
@@ -354,54 +411,67 @@ export function useDictation(onFinal: (text: string) => void): Dictation {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
-      const mimeType = typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : ''
+      // The orb listens with us — real levels, no rerouting of any playback.
+      void resumeOrbAudio().then(() => attachMic(stream).then(detach => (detachRef.current = detach)))
+
+      const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', '']
+      const mimeType = candidates.find(t => !t || (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t))) ?? ''
       const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
+
       chunksRef.current = []
-      recorder.ondataavailable = e => {
-        if (e.data.size) chunksRef.current.push(e.data)
+      recorder.ondataavailable = event => {
+        if (event.data.size) chunksRef.current.push(event.data)
       }
       recorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop())
         streamRef.current = null
+        detachRef.current?.()
+        detachRef.current = null
         setListening(false)
+        if (!chunksRef.current.length) return
 
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' })
-        if (blob.size < 1500) return // too short to be speech
+        const type = recorder.mimeType || 'audio/webm'
+        const blob = new Blob(chunksRef.current, { type })
+        chunksRef.current = []
+        if (blob.size < 1200) return // a tap, not a sentence
 
         setTranscribing(true)
         try {
+          // Re-encode to 16 kHz mono WAV: the ASR endpoint answers 500 for an
+          // MP3 and is happiest with clean PCM, and every browser can decode
+          // what it just recorded.
+          const wav = await toWav(blob)
+          const payload = wav ?? blob
+          const filename = wav ? 'recording.wav' : /mp4|m4a|aac/i.test(type) ? 'recording.m4a' : /ogg/i.test(type) ? 'recording.ogg' : 'recording.webm'
+
           const form = new FormData()
-          form.append('audio', blob, 'recording.webm')
+          form.append('audio', payload, filename)
+          form.append('language', (navigator.language || 'en').split('-')[0])
           const res = await fetch('/api/stt', { method: 'POST', body: form })
-          if (res.ok) {
-            const data = await res.json().catch(() => ({}))
-            if (typeof data.text === 'string' && data.text.trim()) {
-              finalRef.current(data.text.trim())
-              return
-            }
-            setError('no-speech')
+          const data = await res.json().catch(() => ({}))
+          if (res.ok && typeof data.text === 'string' && data.text.trim()) {
+            finalRef.current(data.text.trim())
             return
           }
-          if (res.status === 402 || res.status === 503) {
-            // No Fish Audio credit → hand over to the browser recogniser.
+          if (data?.fallback) {
             setError('no-credit')
             startBrowserDictation()
             return
           }
-          setError('failed')
+          setError(res.status === 422 ? 'no-speech' : 'failed')
         } catch {
           setError('failed')
         } finally {
           setTranscribing(false)
         }
       }
+
       recorderRef.current = recorder
       recorder.start()
-      setUsingBrowser(false)
       setListening(true)
     } catch (err) {
       if ((err as Error).name === 'NotAllowedError') setError('denied')
-      else startBrowserDictation()
+      else if (!startBrowserDictation()) setError('failed')
     }
   }, [startBrowserDictation])
 
@@ -417,8 +487,9 @@ export function useDictation(onFinal: (text: string) => void): Dictation {
     error,
     supported,
     usingBrowser,
-    toggle,
+    start,
     stop,
+    toggle,
     clearError: () => setError(null),
   }
 }

@@ -17,6 +17,8 @@ export interface ProviderConfig {
   thinking: boolean
   /** First-byte budget for this entry in the chain. */
   firstByteMs: number
+  /** Provider-specific request tweaks (e.g. turn a model's thinking off). */
+  extraBody?: Record<string, unknown>
 }
 
 export class ProviderUnreachableError extends Error {
@@ -39,6 +41,21 @@ function apiKey(): string | null {
 
 function baseUrl(): string {
   return (process.env.AI_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, '')
+}
+
+/**
+ * Per-model request tuning.
+ *
+ * The Nemotron family streams a private reasoning trace before its answer; with
+ * a normal token budget that trace can swallow the whole answer and the student
+ * gets an empty bubble. Asking it not to think out loud makes it faster (under
+ * a second) and reliable. GPT-OSS gets the equivalent low-effort hint.
+ */
+function tuneFor(model: string, thinking: boolean): Record<string, unknown> | undefined {
+  if (thinking) return undefined
+  if (/nemotron/i.test(model)) return { chat_template_kwargs: { enable_thinking: false } }
+  if (/gpt-oss/i.test(model)) return { reasoning_effort: 'low' }
+  return undefined
 }
 
 /**
@@ -97,13 +114,57 @@ export function getProviderChain(): ProviderConfig[] {
     apiKey: key,
     model,
     thinking,
-    firstByteMs: index === 0 ? Number(process.env.AI_FIRST_BYTE_MS ?? 12_000) : 9_000,
+    firstByteMs: index === 0 ? Number(process.env.AI_FIRST_BYTE_MS ?? 6_000) : 5_000,
+    extraBody: tuneFor(model, thinking),
   }))
 }
 
 /** Back-compat: the first entry of the chain. */
 export function getProviderConfig(): ProviderConfig | null {
   return getProviderChain()[0] ?? null
+}
+
+/**
+ * One non-streaming completion.
+ *
+ * NVIDIA's streaming route occasionally ends a turn with zero content bytes
+ * (more often under load) while the same model answers the same prompt
+ * normally in a plain request. So when a stream comes back empty, BODHA asks
+ * once more without streaming before moving on — it is a different code path on
+ * the provider's side, and it usually just works.
+ */
+export async function completeOnce(
+  cfg: ProviderConfig,
+  messages: TutorMessage[],
+  opts: { maxTokens?: number; temperature?: number; signal?: AbortSignal } = {},
+): Promise<string> {
+  const body: Record<string, unknown> = {
+    model: cfg.model,
+    stream: false,
+    temperature: opts.temperature ?? 0.6,
+    top_p: 0.95,
+    max_tokens: opts.maxTokens ?? 2048,
+    messages,
+    ...(cfg.extraBody ?? {}),
+  }
+
+  const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${cfg.apiKey}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: opts.signal ?? AbortSignal.timeout(25_000),
+  })
+
+  if (!res.ok) throw new Error(`${cfg.model} → HTTP ${res.status}`)
+
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string | null } }>
+  }
+  return (data.choices?.[0]?.message?.content ?? '').trim()
 }
 
 /**
@@ -125,15 +186,19 @@ export async function* streamCompletion(
     top_p: 0.95,
     max_tokens: opts.maxTokens ?? 2048,
     messages,
+    ...(cfg.extraBody ?? {}),
   }
 
   const timeoutCtl = new AbortController()
   const firstByteMs = opts.firstByteMs ?? cfg.firstByteMs
-  let gotFirstByte = false
+  // "First byte" means the first *content* byte, not the response headers. A
+  // wedged model answers 200 immediately and then says nothing, so a timer
+  // cleared on headers would leave the student waiting on a dead route.
+  let gotContent = false
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
   const timer = setTimeout(() => {
-    if (!gotFirstByte) timeoutCtl.abort()
+    if (!gotContent) timeoutCtl.abort()
   }, firstByteMs)
   const onAbort = () => timeoutCtl.abort()
   opts.signal?.addEventListener('abort', onAbort, { once: true })
@@ -175,9 +240,7 @@ export async function* streamCompletion(
     throw new Error(`${cfg.model} → HTTP ${res.status} ${detail}`.trim())
   }
 
-  gotFirstByte = true
-  clearTimeout(timer)
-
+  // The timer deliberately keeps running until the first content delta lands.
   reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -206,9 +269,21 @@ export async function* streamCompletion(
         // Reasoning traces are never shown to the student.
         const delta = json.choices?.[0]?.delta
         const text = delta?.content
-        if (typeof text === 'string' && text.length) yield text
+        if (typeof text === 'string' && text.length) {
+          if (!gotContent) {
+            gotContent = true
+            clearTimeout(timer)
+          }
+          yield text
+        }
       }
     }
+  } catch (err) {
+    // An abort here means the model went quiet before saying anything.
+    if ((err as Error).name === 'AbortError' && !gotContent) {
+      throw new ProviderUnreachableError(`no content within ${Math.round(firstByteMs / 1000)}s`)
+    }
+    throw err
   } finally {
     cleanup()
     try {

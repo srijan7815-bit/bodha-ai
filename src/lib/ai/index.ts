@@ -1,6 +1,6 @@
 import type { DocumentRecord, Message, TutorMessage } from '@/lib/types'
 import { buildSystemMessages } from './prompt'
-import { getProviderChain, noteProviderResult, streamCompletion, ProviderUnreachableError, DEFAULT_MODEL } from './provider'
+import { completeOnce, getProviderChain, noteProviderResult, streamCompletion, ProviderUnreachableError, DEFAULT_MODEL } from './provider'
 import { streamDemoReply } from './demo'
 
 /**
@@ -76,11 +76,11 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
           produced = true
           sawContent = true
           noteProviderResult(cfg.model, true)
-          // If a model had to give way in this very answer, say so once, quietly.
-          if (stalled.length) {
+          const gaveWay = stalled.find(model => model !== cfg.model)
+          if (gaveWay) {
             yield {
               kind: 'notice',
-              text: `${prettyName(stalled[0])} was not responding, so ${prettyName(cfg.model)} answered this one.`,
+              text: `${prettyName(gaveWay)} was not responding, so ${prettyName(cfg.model)} answered this one.`,
             }
           }
         }
@@ -88,12 +88,29 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
       }
 
       if (!produced) {
-        // Some served models stream only their private reasoning and never a
-        // content delta. A blank answer is not an answer — move to the next
-        // model instead of showing the student an empty bubble.
-        console.warn(`[ai] ${cfg.model} answered with no content — trying the next model`)
+        // The stream ended without a single content byte. That is flakiness on
+        // the provider's streaming route rather than a dead model, so ask the
+        // same model once without streaming before moving down the chain.
+        console.warn(`[ai] ${cfg.model} streamed no content — retrying without streaming`)
+        try {
+          const text = await completeOnce(cfg, messages, { signal, maxTokens: 2048, temperature: 0.6 })
+          if (text) {
+            sawContent = true
+            noteProviderResult(cfg.model, true)
+            const gaveWay = stalled.find(model => model !== cfg.model)
+            if (gaveWay) {
+              yield {
+                kind: 'notice',
+                text: `${prettyName(gaveWay)} was not responding, so ${prettyName(cfg.model)} answered this one.`,
+              }
+            }
+            yield { kind: 'delta', text }
+            return
+          }
+        } catch (err) {
+          console.warn(`[ai] ${cfg.model} non-streaming retry failed:`, (err as Error).message)
+        }
         stalled.push(cfg.model)
-        noteProviderResult(cfg.model, false)
         continue
       }
       return

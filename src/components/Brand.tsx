@@ -51,6 +51,8 @@ export function BodhaMark({ className, size = 32, tone = 'primary' }: MarkProps)
 
 interface WordmarkProps {
   size?: 'sm' | 'md' | 'lg' | 'xl'
+  /** 'inverse' is for dark surfaces (the Live Mode room). */
+  tone?: 'default' | 'inverse'
   className?: string
   /** Show "AI" after the Devanagari word. */
   withAI?: boolean
@@ -69,13 +71,23 @@ const SIZES = {
  * बोध + optional AI suffix. Devanagari sits optically larger than Latin, so the
  * "AI" mark is deliberately smaller and letterspaced.
  */
-export function BodhaWordmark({ size = 'md', className, withAI = true, withLatin = false }: WordmarkProps) {
+export function BodhaWordmark({ size = 'md', className, withAI = true, withLatin = false, tone = 'default' }: WordmarkProps) {
   const s = SIZES[size]
   return (
     <span className={cn('inline-flex items-baseline', s.gap, className)}>
-      <span className={cn('font-deva leading-none text-foreground', s.word)}>बोध</span>
+      <span
+        className={cn('font-deva leading-none', tone === 'inverse' ? 'text-[#F3E9DD]' : 'text-foreground', s.word)}
+      >
+        बोध
+      </span>
       {withAI && (
-        <span className={cn('font-sans font-medium uppercase leading-none tracking-[0.22em] text-primary', s.ai)}>
+        <span
+          className={cn(
+            'font-sans font-medium uppercase leading-none tracking-[0.22em]',
+            tone === 'inverse' ? 'text-[#E0A07C]' : 'text-primary',
+            s.ai,
+          )}
+        >
           AI
         </span>
       )}

@@ -134,6 +134,12 @@
   .pt-safe {
     padding-top: max(env(safe-area-inset-top), 0px);
   }
+
+  /* For immersive full-screen surfaces (Live Mode) where the top bar must sit
+     below a notch and the footer above the home indicator. */
+  .pt-safe-top {
+    padding-top: max(env(safe-area-inset-top), 12px);
+  }
   .h-dvh-minus-safe {
     height: calc(100dvh - env(safe-area-inset-bottom));
   }
