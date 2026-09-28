@@ -22,8 +22,14 @@ import { toWav } from '@/lib/audio'
 
 export type DictationError = 'denied' | 'unsupported' | 'failed' | 'no-speech' | 'no-credit' | null
 
+/** Which voice read-aloud should ask for first. */
+export type ReadAloudProvider = 'fish' | 'magpie' | 'auto'
+
 export interface Speaker {
-  speak: (text: string, opts?: { onDone?: () => void }) => Promise<void>
+  speak: (
+    text: string,
+    opts?: { onDone?: () => void; provider?: ReadAloudProvider },
+  ) => Promise<void>
   stop: () => void
   speaking: boolean
   supported: boolean
@@ -168,7 +174,7 @@ export function useSpeaker(): Speaker {
   )
 
   const speak = useCallback(
-    async (rawText: string, opts?: { onDone?: () => void }) => {
+    async (rawText: string, opts?: { onDone?: () => void; provider?: ReadAloudProvider }) => {
       const text = stripMarkdownForSpeech(rawText).slice(0, 1400)
       if (!text) return
       stop()
@@ -182,7 +188,7 @@ export function useSpeaker(): Speaker {
         const res = await fetch('/api/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text, provider: opts?.provider ?? 'auto' }),
         })
         if (res.ok) {
           const bytes = await res.arrayBuffer()

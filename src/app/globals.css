@@ -140,6 +140,9 @@
   .pt-safe-top {
     padding-top: max(env(safe-area-inset-top), 12px);
   }
+  .pb-safe-bottom {
+    padding-bottom: max(env(safe-area-inset-bottom), 0px);
+  }
   .h-dvh-minus-safe {
     height: calc(100dvh - env(safe-area-inset-bottom));
   }

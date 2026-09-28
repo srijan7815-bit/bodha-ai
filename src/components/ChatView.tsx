@@ -10,7 +10,6 @@ import { useSpeaker, useDictation } from '@/lib/voice'
 import Markdown from '@/components/Markdown'
 import Composer from '@/components/Composer'
 import LiveMode from '@/components/LiveMode'
-import type { OrbState } from '@/components/BodhaOrb'
 import { resumeOrbAudio } from '@/lib/orbAudio'
 import DocPicker from '@/components/DocPicker'
 import { announceChatsChanged } from '@/components/AppShell'
@@ -53,31 +52,20 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   const [doc, setDoc] = useState<DocumentMeta | null>(documentMeta)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [liveOpen, setLiveOpen] = useState(false)
-  const [liveMinimized, setLiveMinimized] = useState(false)
   const [readingId, setReadingId] = useState<string | null>(null)
   const [atBottom, setAtBottom] = useState(true)
-  const [handsFree, setHandsFree] = useState(false)
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   const speaker = useSpeaker()
 
-  // Live Mode needs to reach into the stream loop without rebuilding it, and
-  // dictation must know whether a transcript should be sent or typed.
-  const liveOpenRef = useRef(false)
-  const handsFreeRef = useRef(false)
-  const speakAnswerRef = useRef<((text: string) => void) | null>(null)
-
+  // Dictation is typing by voice, into the draft. It is deliberately separate
+  // from Live Mode, which owns its own microphone, its own turn-taking and its
+  // own voice pipeline and never touches what you have typed.
   const dictation = useDictation(text => {
-    if (liveOpenRef.current) {
-      // Spoken question in Live Mode: send it the moment it lands.
-      void askRef.current?.(text)
-      return
-    }
     setDraft(prev => (prev ? `${prev} ${text}` : text))
   })
-  const askRef = useRef<((text: string) => Promise<void>) | null>(null)
 
   // ─── Draft autosave (restore anything under 20 minutes old) ───────────────
   useEffect(() => {
@@ -158,41 +146,6 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   // Stop speaking when leaving the page.
   useEffect(() => () => speaker.stop(), [speaker])
 
-  useEffect(() => {
-    liveOpenRef.current = liveOpen && !liveMinimized
-    handsFreeRef.current = handsFree
-  }, [liveOpen, liveMinimized, handsFree])
-
-  // In Live Mode the answer is spoken as soon as it is complete; hands-free
-  // opens the mic again the moment BODHA stops talking, so a student can revise
-  // out loud without touching the screen.
-  useEffect(() => {
-    speakAnswerRef.current = (text: string) => {
-      if (!liveOpenRef.current || !text.trim()) return
-      void speaker.speak(text, {
-        onDone: () => {
-          if (handsFreeRef.current) dictation.start()
-        },
-      })
-    }
-  }, [speaker, dictation.start])
-
-  // Opening Live Mode starts listening — it is a conversation, not a form.
-  const autoListenRef = useRef(false)
-  useEffect(() => {
-    if (!liveOpen) {
-      autoListenRef.current = false
-      return
-    }
-    if (liveMinimized || autoListenRef.current) return
-    autoListenRef.current = true
-    const id = setTimeout(() => {
-      void resumeOrbAudio()
-      dictation.start()
-    }, 550)
-    return () => clearTimeout(id)
-  }, [liveOpen, liveMinimized, dictation.start])
-
   // ─── Streaming ────────────────────────────────────────────────────────────
   const runStream = useCallback(
     async (targetChatId: string, body: { content?: string; regenerate?: boolean }, optimistic?: Message) => {
@@ -258,7 +211,6 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
               if (frame.message) {
                 const finished = frame.message as Message
                 setMessages(prev => [...prev, finished])
-                speakAnswerRef.current?.(finished.content)
               }
               setStreaming('')
             } else if (frame.t === 'error') {
@@ -323,54 +275,103 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
     await runStream(targetId, { content: text }, optimistic)
   }, [busy, chatId, clearDraft, dictation, doc, draft, runStream, speaker])
 
-  /** Same path as typing, for a question that arrived by voice. */
-  const ask = useCallback(
-    async (text: string) => {
+  /**
+   * Live Mode's question path.
+   *
+   * A spoken turn goes through exactly the same endpoint as a typed one, so a
+   * voice conversation lands in the same chat history and is waiting on any
+   * other device. It resolves with the full answer while streaming partial text
+   * through `onDelta` — which is what lets the room start speaking after the
+   * first sentence instead of after the last one.
+   */
+  const askLive = useCallback(
+    async (text: string, onDelta: (chunk: string) => void, signal: AbortSignal): Promise<string> => {
       const clean = text.trim()
-      if (!clean || busy) return
-      setDraft(clean)
-      // Let the composer reflect it, then send through the normal flow.
-      await new Promise(resolve => setTimeout(resolve, 0))
-      setDraft('')
-      clearDraft()
-      dictation.stop()
-      speaker.stop()
-      setAtBottom(true)
+      if (!clean) return ''
 
       let targetId = chatId
-      try {
-        if (!targetId) {
-          const res = await authFetch('/api/chats', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: deriveTitle(clean), documentId: doc?.id ?? null }),
-          })
-          if (!res.ok) throw new Error('create failed')
-          const data = await res.json()
-          targetId = data.chat.id as string
-          setChatId(targetId)
-          setTitle(data.chat.title as string)
-          window.history.replaceState(null, '', `/chat/${targetId}`)
-          announceChatsChanged()
-        }
-      } catch {
-        setError('I could not start a new conversation. Please try again.')
-        return
+      if (!targetId) {
+        const res = await authFetch('/api/chats', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: deriveTitle(clean), documentId: doc?.id ?? null }),
+        })
+        if (!res.ok) throw new Error('Could not start a new conversation.')
+        const data = await res.json()
+        targetId = data.chat.id as string
+        setChatId(targetId)
+        setTitle(data.chat.title as string)
+        window.history.replaceState(null, '', `/chat/${targetId}`)
+        announceChatsChanged()
       }
 
       const optimistic: Message = {
-        id: `local-${Date.now()}`,
+        id: `live-${Date.now()}`,
         chatId: targetId,
         role: 'user',
         content: clean,
         createdAt: new Date().toISOString(),
       }
       setMessages(prev => [...prev, optimistic])
-      await runStream(targetId, { content: clean }, optimistic)
+      setAtBottom(true)
+
+      const res = await authFetch(`/api/chats/${targetId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: clean }),
+        signal,
+      })
+      if (!res.ok || !res.body) throw new Error('The connection dropped mid-answer.')
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let streamed = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (!line.trim()) continue
+          let frame: { t: string; v?: string; message?: Message | null; errorMessage?: string }
+          try {
+            frame = JSON.parse(line)
+          } catch {
+            continue
+          }
+
+          if (frame.t === 'user' && frame.message) {
+            const persisted = frame.message
+            setMessages(prev => {
+              const index = prev.findIndex(m => m.id === optimistic.id)
+              if (index === -1) return [...prev, persisted]
+              const next = [...prev]
+              next[index] = persisted
+              return next
+            })
+          } else if (frame.t === 'delta' && frame.v) {
+            streamed += frame.v
+            onDelta(frame.v)
+          } else if (frame.t === 'notice' && frame.v) {
+            setNotice(frame.v)
+          } else if (frame.t === 'done' && frame.message) {
+            setMessages(prev => [...prev, frame.message as Message])
+          } else if (frame.t === 'error' && frame.errorMessage) {
+            setError(frame.errorMessage)
+          }
+        }
+      }
+
+      announceChatsChanged()
+      return streamed
     },
-    [busy, chatId, clearDraft, dictation, doc, runStream, speaker],
+    [chatId, doc],
   )
-  askRef.current = ask
+
 
   const regenerate = useCallback(async () => {
     if (!chatId || busy) return
@@ -390,6 +391,14 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
     setStreaming('')
   }, [])
 
+  /**
+   * Read this message aloud — the button under a finished answer.
+   *
+   * Fish Audio is asked for by name here; the server falls back to NVIDIA's
+   * voice and then to the browser's if Fish is unavailable. This is a
+   * self-contained feature: it shares no state with Live Mode, and Live Mode's
+   * own speech never goes through here.
+   */
   const speak = useCallback(
     (message: Message) => {
       if (readingId === message.id && speaker.speaking) {
@@ -398,30 +407,13 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         return
       }
       setReadingId(message.id)
-      void speaker.speak(message.content).finally(() => setReadingId(current => (current === message.id ? null : current)))
+      void speaker
+        .speak(message.content, { provider: 'fish' })
+        .finally(() => setReadingId(current => (current === message.id ? null : current)))
     },
     [readingId, speaker],
   )
 
-  const orbState: OrbState = busy
-    ? 'thinking'
-    : speaker.speaking
-      ? 'speaking'
-      : dictation.listening
-        ? 'listening'
-        : 'idle'
-
-  const liveCaption = busy
-    ? 'Thinking about that…'
-    : speaker.speaking
-      ? 'Answering out loud'
-      : dictation.transcribing
-        ? 'Writing down what you said…'
-        : dictation.listening
-          ? 'Listening — take your time'
-          : error
-            ? 'Something went wrong just now'
-            : 'Tap the mic and ask me anything'
   const lastAssistantId = [...messages].reverse().find(m => m.role === 'assistant')?.id
 
   return (
@@ -445,11 +437,9 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
           <button
             type="button"
             onClick={() => {
-              const next = !(liveOpen && !liveMinimized)
+              const next = !liveOpen
               setLiveOpen(next)
-              setLiveMinimized(false)
               if (next) void resumeOrbAudio()
-              else speaker.stop()
             }}
             aria-pressed={liveOpen}
             title="Live Mode — talk with BODHA out loud"
@@ -573,45 +563,14 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         </div>
       </div>
 
-      {/* ── Live Mode — a full room for talking, not reading ───────────── */}
-      <AnimatePresence>
-        {liveOpen && (
-          <LiveMode
-            key="live-mode"
-            state={orbState}
-            messages={messages}
-            streaming={streaming}
-            caption={liveCaption}
-            busy={busy}
-            error={error}
-            minimized={liveMinimized}
-            onExpand={() => setLiveMinimized(false)}
-            listening={dictation.listening}
-            transcribing={dictation.transcribing}
-            interim={dictation.interim}
-            onToggleMic={() => {
-              void resumeOrbAudio()
-              if (dictation.listening) dictation.stop()
-              else dictation.start()
-            }}
-            handsFree={handsFree}
-            onToggleHandsFree={() => setHandsFree(value => !value)}
-            onStopSpeaking={() => speaker.stop()}
-            onTypeInstead={() => {
-              setLiveOpen(false)
-              speaker.stop()
-              dictation.stop()
-            }}
-            onEnd={() => {
-              setLiveOpen(false)
-              setLiveMinimized(false)
-              speaker.stop()
-              dictation.stop()
-            }}
-            onMinimize={() => setLiveMinimized(true)}
-          />
-        )}
-      </AnimatePresence>
+      {/* ── Live Mode — a voice room of its own, not read-aloud ─────────── */}
+      <LiveMode
+        open={liveOpen}
+        onClose={() => setLiveOpen(false)}
+        ask={askLive}
+        provider="magpie"
+        language="en-US"
+      />
 
       <DocPicker
         open={pickerOpen}
