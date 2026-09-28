@@ -2,62 +2,66 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ─── CSS Variables for BODHA warm palette ─────────────────────────────────
-   Two modes: light (default "paper") and dark ("night") via <html class="dark"> */
+/* ─── BODHA warm palette ──────────────────────────────────────────────────
+   Channel-triplet CSS variables (tailwind maps them with rgb(... / <alpha-value>)).
+   Light "paper" (default) and dark "night" via <html class="dark">.
+   Brand: bg #FAF7F2 · text #2B2723 · accent #C1633B · card #F1EAE0 */
 
 :root {
-  --background: #FAF7F2;
-  --foreground: #2B2723;
-  --card: #F1EAE0;
-  --card-foreground: #2B2723;
-  --popover: #F1EAE0;
-  --popover-foreground: #2B2723;
-  --primary: #C1633B;
-  --primary-foreground: #FAF7F2;
-  --secondary: #E8DDD1;
-  --secondary-foreground: #2B2723;
-  --muted: #E8DDD1;
-  --muted-foreground: #6B5F53;
-  --accent: #E8DDD1;
-  --accent-foreground: #2B2723;
-  --destructive: #C14E3B;
-  --destructive-foreground: #FAF7F2;
-  --border: #D4C9BB;
-  --input: #D4C9BB;
-  --ring: #C1633B;
+  --background: 250 247 242;      /* #FAF7F2 */
+  --foreground: 43 39 35;        /* #2B2723 */
+  --card: 241 234 224;           /* #F1EAE0 */
+  --card-foreground: 43 39 35;   /* #2B2723 */
+  --popover: 241 234 224;        /* #F1EAE0 */
+  --popover-foreground: 43 39 35;/* #2B2723 */
+  --primary: 193 99 59;          /* #C1633B */
+  --primary-foreground: 250 247 242;
+  --secondary: 232 221 209;      /* #E8DDD1 */
+  --secondary-foreground: 43 39 35;
+  --muted: 232 221 209;          /* #E8DDD1 */
+  --muted-foreground: 107 95 83; /* #6B5F53 */
+  --accent: 232 221 209;         /* #E8DDD1 */
+  --accent-foreground: 43 39 35;
+  --destructive: 193 78 59;      /* #C14E3B */
+  --destructive-foreground: 250 247 242;
+  --border: 212 201 187;         /* #D4C9BB */
+  --input: 212 201 187;          /* #D4C9BB */
+  --ring: 193 99 59;             /* #C1633B */
   --radius: 0.75rem;
   --code-bg: #2B2723;
   --code-ink: #F1EAE0;
 }
 
 .dark {
-  --background: #1A1714;
-  --foreground: #F1EAE0;
-  --card: #24201C;
-  --card-foreground: #F1EAE0;
-  --popover: #24201C;
-  --popover-foreground: #F1EAE0;
-  --primary: #D48A6B;
-  --primary-foreground: #1A1714;
-  --secondary: #2D2823;
-  --secondary-foreground: #F1EAE0;
-  --muted: #2D2823;
-  --muted-foreground: #A39687;
-  --accent: #2D2823;
-  --accent-foreground: #F1EAE0;
-  --destructive: #D48A6B;
-  --destructive-foreground: #1A1714;
-  --border: #3D352D;
-  --input: #3D352D;
-  --ring: #D48A6B;
+  --background: 26 23 20;        /* #1A1714 */
+  --foreground: 241 234 224;     /* #F1EAE0 */
+  --card: 36 32 28;              /* #24201C */
+  --card-foreground: 241 234 224;
+  --popover: 36 32 28;
+  --popover-foreground: 241 234 224;
+  --primary: 212 138 107;        /* #D48A6B */
+  --primary-foreground: 26 23 20;
+  --secondary: 45 40 35;         /* #2D2823 */
+  --secondary-foreground: 241 234 224;
+  --muted: 45 40 35;
+  --muted-foreground: 163 150 135;/* #A39687 */
+  --accent: 45 40 35;
+  --accent-foreground: 241 234 224;
+  --destructive: 212 138 107;
+  --destructive-foreground: 26 23 20;
+  --border: 61 53 45;            /* #3D352D */
+  --input: 61 53 45;
+  --ring: 212 138 107;
   --code-bg: #1A1714;
   --code-ink: #F1EAE0;
 }
 
 /* ─── Base ───────────────────────────────────────────────────────────────── */
 
-* {
-  @apply border-border;
+@layer base {
+  * {
+    @apply border-border;
+  }
 }
 
 html {
@@ -71,7 +75,7 @@ body {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--primary) 25%, transparent);
+  background: color-mix(in srgb, rgb(var(--primary)) 25%, transparent);
 }
 
 /* Custom scrollbar */
@@ -83,21 +87,16 @@ body {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--foreground) 15%, transparent);
+  background: color-mix(in srgb, rgb(var(--foreground)) 15%, transparent);
   border-radius: 8px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--foreground) 28%, transparent);
+  background: color-mix(in srgb, rgb(var(--foreground)) 28%, transparent);
 }
 
-/* Focus ring */
-.focus-warm {
-  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
-}
-
-/* ─── Prose / Chat Message Styles (Assistant) ───────────────────────────── */
+/* ─── Prose / Chat message styles (assistant) ───────────────────────────── */
 
 .prose-bodha {
   @apply font-serif text-[1.05rem] leading-[1.7] text-foreground;
@@ -129,7 +128,7 @@ body {
   width: 5px;
   height: 5px;
   border-radius: 9999px;
-  background: color-mix(in srgb, var(--primary) 55%, transparent);
+  background: color-mix(in srgb, rgb(var(--primary)) 55%, transparent);
 }
 .prose-bodha ol { @apply my-3.5 ml-1 space-y-1.5 list-decimal pl-6 marker:text-primary marker:font-semibold; }
 .prose-bodha blockquote { @apply my-4 rounded-r-lg border-l-[3px] border-primary/60 bg-accent/50 py-1 pl-4 pr-3 italic text-foreground/85; }
@@ -144,7 +143,7 @@ body {
 .katex { font-size: 1.04em; }
 .katex-display { @apply my-4 overflow-x-auto overflow-y-hidden pb-1; }
 
-/* ─── Code Blocks (warm dark, like an inset book page) ───────────────────── */
+/* ─── Code blocks (warm dark, like an inset book page) ──────────────────── */
 
 .prose-bodha pre {
   background: var(--code-bg);
@@ -193,7 +192,7 @@ body {
 .hljs-name { color: #a8d5ba; }
 .hljs-deletion { color: #e08d8d; }
 
-/* ─── PDF.js Text Layer (v4) ─────────────────────────────────────────────── */
+/* ─── PDF.js text layer (v4) ─────────────────────────────────────────────── */
 
 .textLayer {
   position: absolute;
@@ -215,7 +214,7 @@ body {
   transform-origin: 0% 0%;
 }
 .textLayer ::selection {
-  background: color-mix(in srgb, var(--primary) 28%, transparent);
+  background: color-mix(in srgb, rgb(var(--primary)) 28%, transparent);
 }
 .textLayer .endOfContent {
   position: absolute;
@@ -226,9 +225,12 @@ body {
   display: block;
 }
 
-/* ─── Utilities ──────────────────────────────────────────────────────────── */
+/* ─── Utilities ─────────────────────────────────────────────────────────── */
 
 @layer utilities {
+  .focus-warm {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
   .writing-caret::after {
     content: '';
     display: inline-block;
@@ -236,7 +238,7 @@ body {
     height: 1.05em;
     margin-left: 2px;
     vertical-align: text-bottom;
-    background: color-mix(in srgb, var(--primary) 70%, transparent);
+    background: color-mix(in srgb, rgb(var(--primary)) 70%, transparent);
     border-radius: 2px;
     animation: blink 1s step-end infinite;
   }

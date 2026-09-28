@@ -9,7 +9,7 @@ import type { Message } from '@/lib/types'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 120
 
-type Params = { params: { id: string } }
+type Params = { params: Promise<{ id: string }> }
 
 const bodySchema = z
   .object({
@@ -23,12 +23,15 @@ const bodySchema = z
 /**
  * POST /api/chats/:id/messages
  * Body: { content } to send, or { regenerate: true } to retry the last answer.
- * Streams BODHA's reply as NDJSON:
- *   {"t":"delta","v":"..."}      incremental answer text
- *   {"t":"done","message":{...}} final, persisted assistant message
- *   {"t":"error","errorMessage":"..."}
+ * Streams BODHA's reply as NDJSON frames:
+ *   {"t":"user","message":{...}}   the persisted student message
+ *   {"t":"delta","v":"..."}        incremental answer text
+ *   {"t":"notice","v":"..."}       inline notes (e.g. model fallback)
+ *   {"t":"done","message":{...}}   final, persisted assistant message
+ *   {"t":"error","errorMessage": "..."}
  */
 export async function POST(req: NextRequest, { params }: Params) {
+  const { id } = await params
   const user = await getAuthUser(req)
   if (!user) return json({ t: 'error', errorMessage: 'Not signed in' }, 401)
 
@@ -49,7 +52,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   const store = await getStore()
-  const chat = await store.getChat(params.id)
+  const chat = await store.getChat(id, user.id)
   if (!chat || chat.userId !== user.id) {
     return json({ t: 'error', errorMessage: 'Chat not found' }, 404)
   }
@@ -59,10 +62,10 @@ export async function POST(req: NextRequest, { params }: Params) {
   // Save the student's message (or drop the old answer when regenerating)
   let userMessage: Message | null = null
   if (isRegenerate) {
-    const existing = await store.listMessages(params.id)
+    const existing = await store.listMessages(id, user.id)
     // remove any trailing assistant messages so the model retries the last question
     for (let i = existing.length - 1; i >= 0 && existing[i].role === 'assistant'; i--) {
-      await store.deleteMessage(existing[i].id)
+      await store.deleteMessage(existing[i].id, user.id, id)
       existing.splice(i, 1)
     }
     const lastUser = [...existing].reverse().find(m => m.role === 'user')
@@ -71,21 +74,21 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
     userMessage = lastUser
   } else {
-    userMessage = await store.createMessage(params.id, 'user', parsed.data.content!)
+    userMessage = await store.createMessage(id, 'user', parsed.data.content!, undefined, undefined, user.id)
   }
 
   // Auto-title from the first message
   if (chat.title === 'New chat') {
     const raw = (parsed.data.content ?? '').trim().replace(/\s+/g, ' ')
     const short = raw.length > 52 ? `${raw.slice(0, 52)}…` : raw || 'New chat'
-    await store.updateChat(params.id, { title: short }).catch(() => {})
+    await store.updateChat(id, { title: short }, user.id).catch(() => {})
   }
 
   // Gather context: history + linked document
-  const history = await store.listMessages(params.id)
+  const history = await store.listMessages(id, user.id)
   let document = null
   if (chat.documentId) {
-    document = await store.getDocument(chat.documentId).catch(() => null)
+    document = await store.getDocument(chat.documentId, user.id).catch(() => null)
   }
 
   const encoder = new TextEncoder()
@@ -105,23 +108,26 @@ export async function POST(req: NextRequest, { params }: Params) {
       let full = ''
       try {
         if (!isRegenerate) send({ t: 'user', message: userMessage })
-        for await (const delta of streamTutorReply({ history, document }, abortCtl.signal)) {
-          full += delta
-          send({ t: 'delta', v: delta })
+        for await (const chunk of streamTutorReply({ history, document }, abortCtl.signal)) {
+          if (chunk.kind === 'delta') {
+            full += chunk.text
+            send({ t: 'delta', v: chunk.text })
+          } else {
+            send({ t: 'notice', v: chunk.text })
+          }
         }
       } catch (err) {
-        const message =
-          err instanceof Error && /timeout|aborted/i.test(err.message)
-            ? 'My thoughts took too long to arrive — the connection was interrupted. Please try again.'
-            : 'I hit a problem reaching my teaching model. Please try again in a moment.'
+        if (!abortCtl.signal.aborted) {
+          console.warn('[messages] stream failed:', (err as Error).message)
+          send({ t: 'error', errorMessage: full ? undefined : 'I hit a problem reaching my teaching model. Please try again in a moment.' })
+        }
         if (full) full += '\n\n*— connection interrupted —*'
-        send({ t: 'error', errorMessage: full ? undefined : message })
       }
 
       // Persist whatever BODHA managed to say (even partial, if content arrived)
       if (full.trim()) {
         try {
-          const assistantMessage = await store.createMessage(params.id, 'assistant', full)
+          const assistantMessage = await store.createMessage(id, 'assistant', full, undefined, undefined, user.id)
           send({ t: 'done', message: assistantMessage })
         } catch {
           send({ t: 'done', message: null })

@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import clsx from 'clsx'
 import type { DocumentMeta } from '@/lib/types'
-import { authFetch } from '@/lib/firebase/server-auth'
+import { authFetch } from '@/lib/firebase/client-token'
 import { announceChatsChanged } from '@/components/AppShell'
 
 /**

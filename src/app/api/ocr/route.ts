@@ -67,10 +67,8 @@ export async function POST(req: NextRequest) {
       const doc = await store.getDocument(documentId, user.id)
       if (doc && doc.userId === user.id) {
         const divider = doc.textContent.trim() ? '\n\n' : ''
-        const existing = doc.textContent
-        if (!existing.includes(text.slice(0, 200))) {
-          const { appendDocumentText } = await import('@/lib/store/helpers')
-          await appendDocumentText(store, documentId, user.id, divider + text)
+        if (!doc.textContent.includes(text.slice(0, 200))) {
+          await store.updateDocumentText(documentId, user.id, doc.textContent + divider + text)
         }
         merged = true
       }

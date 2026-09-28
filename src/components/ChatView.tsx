@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import type { Chat, DocumentMeta, Message, User } from '@/lib/types'
-import { authFetch } from '@/lib/firebase/server-auth'
+import { authFetch } from '@/lib/firebase/client-token'
 import { useDictation, useSpeaker, speechSupported } from '@/lib/voice'
 import Markdown, { type RunnableLang } from '@/components/Markdown'
 import SandboxDrawer from '@/components/SandboxDrawer'
@@ -37,6 +37,7 @@ export default function ChatView({ user, chat, initialMessages, documentMeta }: 
   const [docChip, setDocChip] = useState<DocumentMeta | null>(documentMeta)
   const [docPickerOpen, setDocPickerOpen] = useState(false)
   const [autoSpeak, setAutoSpeak] = useState(false)
+  const [notices, setNotices] = useState<string[]>([])
   const [sandboxCode, setSandboxCode] = useState<{ lang: RunnableLang; code: string } | null>(null)
   const [thinkingPhase, setThinkingPhase] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -77,6 +78,7 @@ export default function ChatView({ user, chat, initialMessages, documentMeta }: 
       setStreaming(true)
       setError(null)
       setStreamText('')
+      setNotices([])
       setThinkingPhase(true)
       if (!payload.regenerate && payload.content) {
         // optimistic user bubble
@@ -138,6 +140,8 @@ export default function ChatView({ user, chat, initialMessages, documentMeta }: 
               setThinkingPhase(false)
               full += evt.v
               setStreamText(full)
+            } else if (evt.t === 'notice' && evt.v) {
+              setNotices(prev => (prev.includes(evt.v!) ? prev : [...prev, evt.v!]))
             } else if (evt.t === 'error' && evt.errorMessage) {
               setError(evt.errorMessage)
             } else if (evt.t === 'done') {
@@ -343,6 +347,14 @@ export default function ChatView({ user, chat, initialMessages, documentMeta }: 
           {/* streaming bubble */}
           {streaming && (
             <div className="mt-7 animate-fade-up">
+              {notices.map((n, i) => (
+                <p
+                  key={i}
+                  className="mb-3 rounded-xl border border-border/70 bg-accent/50 px-4 py-2.5 font-serif text-[0.85rem] italic leading-relaxed text-muted-foreground"
+                >
+                  {n}
+                </p>
+              ))}
               {thinkingPhase && (
                 <div className="flex items-center gap-1.5 text-muted-foreground" aria-live="polite">
                   <Dot delay="0ms" />

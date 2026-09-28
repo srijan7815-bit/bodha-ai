@@ -1,11 +1,11 @@
 'use client'
 
-import { createContext, useContext, useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { onAuthStateChanged, signOut as firebaseSignOut, User as FirebaseUser } from 'firebase/auth'
-import { auth } from '@/lib/firebase/client'
+import { createContext, useContext, useEffect, useState, useCallback } from 'react'
+import { useRouter, usePathname } from 'next/navigation'
+import { onAuthStateChanged, signOut as firebaseSignOut, type User as FirebaseUser } from 'firebase/auth'
+import { auth, firebaseClientEnabled } from '@/lib/firebase/client'
 
-interface AuthUser {
+export interface AuthUser {
   id: string
   email: string
   name: string
@@ -13,16 +13,22 @@ interface AuthUser {
   avatarUrl?: string
 }
 
+export type AuthMode = 'firebase' | 'local'
+
 interface AuthContextValue {
   user: AuthUser | null
   loading: boolean
   firebaseUser: FirebaseUser | null
+  mode: AuthMode
+  signOut: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue>({
   user: null,
   loading: true,
   firebaseUser: null,
+  mode: 'local',
+  signOut: async () => {},
 })
 
 export function useAuth() {
@@ -30,43 +36,91 @@ export function useAuth() {
 }
 
 /**
- * Client-side auth gate: listens to Firebase auth state, resolves the
- * display profile, and redirects to /login when signed out.
+ * Auth gate for the app shell.
+ *
+ *  - Firebase mode (public Firebase config set): listens to Firebase Auth and
+ *    exposes the signed-in user + ID tokens (see authFetch).
+ *  - Local demo mode (no Firebase config): httpOnly cookie sessions via
+ *    /api/auth/me — the seeded demo account works out of the box.
+ *
+ * Redirects to /login whenever there is no signed-in user.
  */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter()
-  const [state, setState] = useState<AuthContextValue>({
+  const pathname = usePathname()
+  const mode: AuthMode = firebaseClientEnabled ? 'firebase' : 'local'
+
+  const [state, setState] = useState<Omit<AuthContextValue, 'signOut' | 'mode'>>({
     user: null,
     loading: true,
     firebaseUser: null,
   })
 
-  useEffect(() => {
-    if (!auth) {
-      setState({ user: null, loading: false, firebaseUser: null })
-      return
+  const signOut = useCallback(async () => {
+    if (mode === 'firebase' && auth) {
+      try {
+        await firebaseSignOut(auth)
+      } catch {}
     }
+    // Always clear the local cookie too (no-op in Firebase mode).
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
+    window.location.href = '/login'
+  }, [mode])
 
-    const unsub = onAuthStateChanged(auth, async (fbUser) => {
-      if (!fbUser) {
+  useEffect(() => {
+    let cancelled = false
+
+    if (mode === 'firebase') {
+      if (!auth) {
         setState({ user: null, loading: false, firebaseUser: null })
-        router.replace('/login')
         return
       }
-
-
-      const user: AuthUser = {
-        id: fbUser.uid,
-        email: fbUser.email ?? '',
-        name: fbUser.displayName ?? fbUser.email?.split('@')[0] ?? 'Student',
-        createdAt: fbUser.metadata.creationTime ?? new Date().toISOString(),
-        avatarUrl: fbUser.photoURL ?? undefined,
+      const unsub = onAuthStateChanged(auth, fbUser => {
+        if (cancelled) return
+        if (!fbUser) {
+          setState({ user: null, loading: false, firebaseUser: null })
+          router.replace('/login')
+          return
+        }
+        setState({
+          user: {
+            id: fbUser.uid,
+            email: fbUser.email ?? '',
+            name: fbUser.displayName ?? fbUser.email?.split('@')[0] ?? 'Student',
+            createdAt: fbUser.metadata.creationTime ?? new Date().toISOString(),
+            avatarUrl: fbUser.photoURL ?? undefined,
+          },
+          loading: false,
+          firebaseUser: fbUser,
+        })
+      })
+      return () => {
+        cancelled = true
+        unsub()
       }
-      setState({ user, loading: false, firebaseUser: fbUser })
-    })
+    }
 
-    return () => unsub()
-  }, [router])
+    // Local demo mode: cookie session.
+    ;(async () => {
+      try {
+        const res = await fetch('/api/auth/me', { cache: 'no-store' })
+        const data = res.ok ? await res.json() : { user: null }
+        if (cancelled) return
+        if (!data.user) {
+          setState({ user: null, loading: false, firebaseUser: null })
+          if (pathname !== '/login' && pathname !== '/register') router.replace('/login')
+          return
+        }
+        setState({ user: data.user, loading: false, firebaseUser: null })
+      } catch {
+        if (!cancelled) setState({ user: null, loading: false, firebaseUser: null })
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [mode, router, pathname])
 
   if (state.loading) {
     return (
@@ -87,5 +141,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     )
   }
 
-  return <AuthContext.Provider value={state}>{children}</AuthContext.Provider>
+  return (
+    <AuthContext.Provider value={{ ...state, mode, signOut }}>{children}</AuthContext.Provider>
+  )
 }

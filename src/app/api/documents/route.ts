@@ -47,10 +47,11 @@ export async function POST(req: NextRequest) {
   const mime = file.type || 'application/octet-stream'
   const name = file.name || 'document'
   const isPdf = mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf')
+  const isImage = /^image\/(png|jpe?g)$/i.test(mime) || /\.(png|jpe?g)$/i.test(name)
   const isText = mime.startsWith('text/') || /\.(txt|md|markdown|csv|json)$/i.test(name)
 
-  if (!isPdf && !isText) {
-    return NextResponse.json({ error: 'Only PDF and text files are supported for now.' }, { status: 415 })
+  if (!isPdf && !isImage && !isText) {
+    return NextResponse.json({ error: 'Only PDFs, images and text files are supported for now.' }, { status: 415 })
   }
 
   const store = await getStore()
@@ -59,26 +60,42 @@ export async function POST(req: NextRequest) {
 
   let pageCount: number | null = null
   let textContent = ''
+  let ocrPending = false
 
   if (isPdf) {
-    // Server-side text extraction with pdf-parse
+    // Real text-layer extraction with pdfjs-dist (works with no API key).
     try {
-      const { pdfServer } = await import('@/lib/pdf-server')
-      const result = await pdfServer(buffer)
+      const { extractPdfText } = await import('@/lib/pdf-server')
+      const result = await extractPdfText(buffer)
       pageCount = result.pageCount
       textContent = result.text
     } catch (e) {
-      console.warn('[documents] PDF parse failed:', e)
-      textContent = ''
+      console.warn('[documents] PDF text extraction failed:', e)
+    }
+    // Scanned book? Flag it so the client can rasterize pages → /api/ocr
+    // (nvidia/nemotron-parse) and merge the text in.
+    try {
+      const { looksScanned } = await import('@/lib/ocr')
+      ocrPending = looksScanned(textContent, pageCount ?? 0)
+    } catch {}
+  } else if (isImage) {
+    // Direct OCR with nvidia/nemotron-parse — the server holds the API key.
+    try {
+      const { ocrImage } = await import('@/lib/ocr')
+      textContent = await ocrImage(buffer, mime)
+    } catch (e) {
+      console.warn('[documents] image OCR failed:', (e as Error).message)
+      ocrPending = true
     }
   } else {
     textContent = buffer.toString('utf-8')
     pageCount = null
   }
 
-  const title = typeof form.get('title') === 'string' && (form.get('title') as string).trim()
-    ? (form.get('title') as string).trim().slice(0, 120)
-    : name.replace(/\.[^.]+$/, '')
+  const title =
+    typeof form.get('title') === 'string' && (form.get('title') as string).trim()
+      ? (form.get('title') as string).trim().slice(0, 120)
+      : name.replace(/\.[^.]+$/, '')
 
   const meta = await store.createDocument({
     id,
@@ -93,5 +110,5 @@ export async function POST(req: NextRequest) {
     createdAt: new Date().toISOString(),
   })
 
-  return NextResponse.json({ document: meta })
+  return NextResponse.json({ document: meta, ocrPending })
 }

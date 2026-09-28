@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import type { DocumentMeta } from '@/lib/types'
-import { authFetch } from '@/lib/firebase/server-auth'
+import { authFetch } from '@/lib/firebase/client-token'
 import { BookOpen, FileText } from 'lucide-react'
 
 interface Props {

@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { useAuth } from '@/components/AuthProvider'
+import { authFetch } from '@/lib/firebase/client-token'
 import type { Chat, DocumentMeta } from '@/lib/types'
 import {
   Plus,
@@ -33,7 +34,7 @@ interface AppShellProps {
 }
 
 export default function AppShell({ children }: AppShellProps) {
-  const { user } = useAuth()
+  const { user, signOut } = useAuth()
   const pathname = usePathname()
   const [chats, setChats] = useState<Chat[] | null>(null)
   const [docsCount, setDocsCount] = useState(0)
@@ -42,8 +43,8 @@ export default function AppShell({ children }: AppShellProps) {
   const refreshChats = useCallback(async () => {
     try {
       const [chatsRes, docsRes] = await Promise.all([
-        fetch('/api/chats', { cache: 'no-store' }),
-        fetch('/api/documents', { cache: 'no-store' }),
+        authFetch('/api/chats', { cache: 'no-store' }),
+        authFetch('/api/documents', { cache: 'no-store' }),
       ])
       if (chatsRes.ok) setChats((await chatsRes.json()).chats ?? [])
       if (docsRes.ok) setDocsCount(((await docsRes.json()).documents ?? []).length)
@@ -150,14 +151,7 @@ export default function AppShell({ children }: AppShellProps) {
             <Button
               variant="ghost"
               size="icon"
-              onClick={async () => {
-                try {
-                  const { signOut } = await import('firebase/auth')
-                  const { auth } = await import('@/lib/firebase/client')
-                  if (auth) await signOut(auth)
-                } catch {}
-                window.location.href = '/'
-              }}
+              onClick={() => signOut()}
               className="text-muted-foreground hover:bg-primary/15 hover:text-primary"
               title="Sign out"
               aria-label="Sign out"
@@ -227,7 +221,7 @@ function ChatList({ chats, pathname }: { chats: Chat[] | null; pathname: string 
 
   async function remove(chat: Chat) {
     if (!window.confirm(`Delete "${chat.title}"? This cannot be undone.`)) return
-    await fetch(`/api/chats/${chat.id}`, { method: 'DELETE' }).catch(() => {})
+    await authFetch(`/api/chats/${chat.id}`, { method: 'DELETE' }).catch(() => {})
     announceChatsChanged()
     if (pathname === `/chat/${chat.id}`) router.push('/chat')
   }
