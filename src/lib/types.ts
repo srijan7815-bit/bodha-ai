@@ -71,6 +71,8 @@ export interface DocumentMeta {
   sizeBytes: number
   pageCount: number | null
   createdAt: string
+  /** True once we hold readable text for this document (text layer or OCR). */
+  hasText?: boolean
 }
 
 export interface DocumentRecord extends DocumentMeta {

@@ -13,97 +13,102 @@ export type RunnableLang = 'html' | 'css' | 'js'
 
 interface MarkdownProps {
   content: string
+  className?: string
+  /** When provided, code blocks get a “Run in sandbox” action. */
   onRun?: (lang: RunnableLang, code: string) => void
 }
 
-/** Code block with copy + run-in-sandbox actions */
-function CodeBlock({
-  code,
-  lang,
-  onRun,
-}: {
-  code: string
-  lang: RunnableLang | 'other'
-  onRun?: (lang: RunnableLang, code: string) => void
-}) {
+const RUNNABLE: Record<string, RunnableLang> = {
+  html: 'html',
+  htm: 'html',
+  css: 'css',
+  js: 'js',
+  javascript: 'js',
+  jsx: 'js',
+}
+
+function CodeBlock({ code, lang, onRun }: { code: string; lang: string; onRun?: MarkdownProps['onRun'] }) {
   const [copied, setCopied] = useState(false)
-  const runnable = lang === 'html' || lang === 'css' || lang === 'js'
+  const runnable = RUNNABLE[lang]
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(code)
       setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
+      setTimeout(() => setCopied(false), 1600)
     } catch {}
   }
 
   return (
-    <div className="group/code relative my-4">
-      <div className="flex items-center justify-between rounded-t-xl border border-b-0 border-black/10 bg-[#1e1912] px-4 py-1.5">
-        <span className="font-mono text-[11px] uppercase tracking-wider text-[#93866c]">{lang}</span>
-        <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover/code:opacity-100">
+    <div className="group/code not-prose my-4">
+      <div className="flex items-center justify-between gap-2 rounded-t-xl border border-b-0 border-black/20 bg-code px-3.5 py-1.5">
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-ink/45">
+          {runnable ?? (lang || 'text')}
+        </span>
+        <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/code:opacity-100">
           {runnable && onRun && (
             <button
-              onClick={() => onRun(lang as RunnableLang, code)}
-              className="flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-[#e8906c] transition-colors hover:bg-[#e8906c]/10"
-              title="Run in sandbox"
+              type="button"
+              onClick={() => onRun(runnable, code)}
+              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-ink/70 transition-colors hover:bg-white/[0.07] hover:text-ink"
             >
-              <Play className="h-3 w-3" />
+              <Play className="h-3 w-3" strokeWidth={2} />
               Run
             </button>
           )}
           <button
+            type="button"
             onClick={copy}
-            className="flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-[#93866c] transition-colors hover:bg-white/10 hover:text-[#efe3cc]"
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-ink/70 transition-colors hover:bg-white/[0.07] hover:text-ink"
           >
-            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+            {copied ? <Check className="h-3 w-3" strokeWidth={2} /> : <Copy className="h-3 w-3" strokeWidth={2} />}
             {copied ? 'Copied' : 'Copy'}
           </button>
         </div>
       </div>
-      <pre className="!mt-0 !rounded-t-none">
-        <code className={`language-${lang === 'other' ? 'text' : lang}`}>{code}</code>
+      <pre className="mt-0 rounded-b-xl rounded-t-none border border-t-0 border-black/20">
+        <code className={lang ? `language-${lang} hljs` : 'hljs'}>{code}</code>
       </pre>
     </div>
   )
 }
 
-const Markdown = memo(function Markdown({ content, onRun }: MarkdownProps) {
+/**
+ * Reading-first markdown.
+ *
+ * Composition lives in `.reading` (globals.css) so chat answers, document text
+ * and the reader share one typographic voice.
+ */
+function MarkdownInner({ content, className, onRun }: MarkdownProps) {
   return (
-    <div className="prose-bodha">
+    <div className={cn('reading', className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex, rehypeHighlight]}
+        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }], [rehypeHighlight, { detect: true, ignoreMissing: true }]]}
         components={{
-          pre: ({ children }) => {
-            // Extract code from the pre element
-            const child = Array.isArray(children) ? children[0] : children
-            if (!child || typeof child !== 'object' || !('props' in child)) return <pre>{children}</pre>
-
-            const props = child.props as { className?: string; children?: React.ReactNode }
-            const className = props.className ?? ''
-            const match = /language-(\w+)/.exec(className)
-            const lang = (match?.[1] ?? 'other') as RunnableLang | 'other'
-
-            // Extract raw text content
-            let code = ''
-            const extract = (node: React.ReactNode): void => {
-              if (typeof node === 'string') {
-                code += node
-              } else if (Array.isArray(node)) {
-                node.forEach(extract)
-              } else if (node && typeof node === 'object' && 'props' in node) {
-                extract((node.props as { children?: React.ReactNode }).children)
-              }
+          pre: ({ children }) => <>{children}</>,
+          code({ className: cls, children, ...props }) {
+            const text = String(children ?? '')
+            const match = /language-([\w+-]+)/.exec(cls ?? '')
+            const isBlock = !!match || text.includes('\n')
+            if (!isBlock) {
+              return (
+                <code className={cls} {...props}>
+                  {children}
+                </code>
+              )
             }
-            extract(props.children)
-
-            return <CodeBlock code={code} lang={lang} onRun={onRun} />
+            return <CodeBlock code={text.replace(/\n$/, '')} lang={match?.[1]?.toLowerCase() ?? ''} onRun={onRun} />
           },
           a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer">
+            <a href={href} target="_blank" rel="noreferrer noopener">
               {children}
             </a>
+          ),
+          table: ({ children }) => (
+            <div className="not-prose my-4 overflow-x-auto rounded-xl border border-border/70">
+              <table className="w-full">{children}</table>
+            </div>
           ),
         }}
       >
@@ -111,6 +116,6 @@ const Markdown = memo(function Markdown({ content, onRun }: MarkdownProps) {
       </ReactMarkdown>
     </div>
   )
-})
+}
 
-export default Markdown
+export default memo(MarkdownInner)

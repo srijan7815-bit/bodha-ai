@@ -259,7 +259,10 @@ export class FileStore implements Store {
     return this.data.documents
       .filter(d => d.userId === userId)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .map(({ content, textContent, ...meta }) => meta)
+      .map(({ content, textContent, ...meta }) => ({
+        ...meta,
+        hasText: typeof textContent === 'string' && textContent.trim().length > 0,
+      }))
   }
 
   async getDocument(id: string, _ownerId?: string): Promise<DocumentRecord | null> {

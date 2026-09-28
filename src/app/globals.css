@@ -2,256 +2,355 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ─── BODHA warm palette ──────────────────────────────────────────────────
-   Channel-triplet CSS variables (tailwind maps them with rgb(... / <alpha-value>)).
-   Light "paper" (default) and dark "night" via <html class="dark">.
-   Brand: bg #FAF7F2 · text #2B2723 · accent #C1633B · card #F1EAE0 */
+/* ─── BODHA warm palette ─────────────────────────────────────────────────────
+   Channel triplets so Tailwind can apply opacity modifiers.
+   paper (default): bg #FAF7F2 · text #2B2723 · accent #C1633B · card #F1EAE0
+   night (optional, `class="dark"`): the same palette after dusk.            */
 
 :root {
-  --background: 250 247 242;      /* #FAF7F2 */
-  --foreground: 43 39 35;        /* #2B2723 */
-  --card: 241 234 224;           /* #F1EAE0 */
-  --card-foreground: 43 39 35;   /* #2B2723 */
-  --popover: 241 234 224;        /* #F1EAE0 */
-  --popover-foreground: 43 39 35;/* #2B2723 */
-  --primary: 193 99 59;          /* #C1633B */
-  --primary-foreground: 250 247 242;
-  --secondary: 232 221 209;      /* #E8DDD1 */
+  --background: 250 247 242;
+  --background-soft: 246 241 233;
+  --foreground: 43 39 35;
+  --surface: 252 250 246;
+  --card: 241 234 224;
+  --card-foreground: 43 39 35;
+  --popover: 252 250 246;
+  --popover-foreground: 43 39 35;
+  --primary: 193 99 59;
+  --primary-foreground: 253 251 248;
+  --secondary: 235 225 213;
   --secondary-foreground: 43 39 35;
-  --muted: 232 221 209;          /* #E8DDD1 */
-  --muted-foreground: 107 95 83; /* #6B5F53 */
-  --accent: 232 221 209;         /* #E8DDD1 */
+  --muted: 235 225 213;
+  --muted-foreground: 122 109 96;
+  --accent: 235 225 213;
   --accent-foreground: 43 39 35;
-  --destructive: 193 78 59;      /* #C14E3B */
-  --destructive-foreground: 250 247 242;
-  --border: 212 201 187;         /* #D4C9BB */
-  --input: 212 201 187;          /* #D4C9BB */
-  --ring: 193 99 59;             /* #C1633B */
+  --destructive: 178 66 48;
+  --destructive-foreground: 253 251 248;
+  --border: 224 214 201;
+  --input: 224 214 201;
+  --ring: 193 99 59;
+  --code-bg: 43 39 35;
+  --code-ink: 245 239 231;
   --radius: 0.75rem;
-  --code-bg: #2B2723;
-  --code-ink: #F1EAE0;
 }
 
 .dark {
-  --background: 26 23 20;        /* #1A1714 */
-  --foreground: 241 234 224;     /* #F1EAE0 */
-  --card: 36 32 28;              /* #24201C */
-  --card-foreground: 241 234 224;
-  --popover: 36 32 28;
-  --popover-foreground: 241 234 224;
-  --primary: 212 138 107;        /* #D48A6B */
+  --background: 24 21 18;
+  --background-soft: 28 25 21;
+  --foreground: 240 234 225;
+  --surface: 31 27 23;
+  --card: 35 31 26;
+  --card-foreground: 240 234 225;
+  --popover: 31 27 23;
+  --popover-foreground: 240 234 225;
+  --primary: 214 139 106;
   --primary-foreground: 26 23 20;
-  --secondary: 45 40 35;         /* #2D2823 */
-  --secondary-foreground: 241 234 224;
-  --muted: 45 40 35;
-  --muted-foreground: 163 150 135;/* #A39687 */
-  --accent: 45 40 35;
-  --accent-foreground: 241 234 224;
-  --destructive: 212 138 107;
+  --secondary: 44 38 33;
+  --secondary-foreground: 240 234 225;
+  --muted: 44 38 33;
+  --muted-foreground: 166 153 138;
+  --accent: 44 38 33;
+  --accent-foreground: 240 234 225;
+  --destructive: 214 120 100;
   --destructive-foreground: 26 23 20;
-  --border: 61 53 45;            /* #3D352D */
-  --input: 61 53 45;
-  --ring: 212 138 107;
-  --code-bg: #1A1714;
-  --code-ink: #F1EAE0;
+  --border: 58 51 44;
+  --input: 58 51 44;
+  --ring: 214 139 106;
+  --code-bg: 18 16 14;
+  --code-ink: 240 234 225;
 }
 
-/* ─── Base ───────────────────────────────────────────────────────────────── */
+/* ─── Base ─────────────────────────────────────────────────────────────────── */
 
 @layer base {
   * {
     @apply border-border;
   }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-inter), system-ui, sans-serif;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'ss01';
+    text-rendering: optimizeLegibility;
+    overscroll-behavior-y: none;
+  }
+
+  /* Visible, calm focus ring everywhere (keyboard users included). */
+  :focus-visible {
+    outline: 2px solid rgb(var(--ring) / 0.55);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  ::selection {
+    background: rgb(var(--primary) / 0.18);
+  }
+
+  button,
+  [role='button'] {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  input,
+  textarea {
+    font-family: inherit;
+  }
 }
 
-html {
-  scroll-behavior: smooth;
+/* ─── Scrollbars: thin, warm, only when needed ─────────────────────────────── */
+
+@layer utilities {
+  .scrollbar-quiet {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--border)) transparent;
+  }
+  .scrollbar-quiet::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-quiet::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-quiet::-webkit-scrollbar-thumb {
+    background-color: rgb(var(--border));
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  .scrollbar-quiet::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(var(--muted-foreground) / 0.5);
+    background-clip: content-box;
+  }
+
+  /* Mobile: keep content clear of the home indicator. */
+  .pb-safe {
+    padding-bottom: max(env(safe-area-inset-bottom), 0px);
+  }
+  .pt-safe {
+    padding-top: max(env(safe-area-inset-top), 0px);
+  }
+  .h-dvh-minus-safe {
+    height: calc(100dvh - env(safe-area-inset-bottom));
+  }
+  .text-balance {
+    text-wrap: balance;
+  }
+  .text-pretty {
+    text-wrap: pretty;
+  }
 }
 
-body {
-  @apply bg-background text-foreground antialiased;
-  font-feature-settings: 'ss01', 'cv11';
-  transition: background-color 0.3s ease, color 0.3s ease;
+/* ─── Reading typography (chat + documents) ──────────────────────────────── */
+
+.reading {
+  @apply font-serif text-reading text-foreground/90;
 }
 
-::selection {
-  background: color-mix(in srgb, rgb(var(--primary)) 25%, transparent);
+.reading > * + * {
+  margin-top: 1.05em;
 }
 
-/* Custom scrollbar */
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-*::-webkit-scrollbar-track {
-  background: transparent;
-}
-*::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, rgb(var(--foreground)) 15%, transparent);
-  border-radius: 8px;
-  border: 3px solid transparent;
-  background-clip: content-box;
-}
-*::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, rgb(var(--foreground)) 28%, transparent);
+.reading p {
+  @apply text-pretty;
 }
 
-/* ─── Prose / Chat message styles (assistant) ───────────────────────────── */
-
-.prose-bodha {
-  @apply font-serif text-[1.05rem] leading-[1.7] text-foreground;
-  max-width: 700px;
-  overflow-wrap: break-word;
+.reading h1,
+.reading h2,
+.reading h3,
+.reading h4 {
+  @apply font-sans font-semibold tracking-[-0.011em] text-foreground;
+  margin-top: 1.6em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
 }
-.prose-bodha > *:first-child { margin-top: 0; }
-.prose-bodha > *:last-child { margin-bottom: 0; }
-.prose-bodha p { @apply my-3.5; }
-.prose-bodha h1,
-.prose-bodha h2,
-.prose-bodha h3,
-.prose-bodha h4 {
-  @apply font-display font-semibold text-foreground mt-6 mb-2.5 leading-snug;
+.reading h1 {
+  @apply text-[1.45rem];
 }
-.prose-bodha h1 { @apply text-[1.35rem]; }
-.prose-bodha h2 { @apply text-[1.22rem]; }
-.prose-bodha h3 { @apply text-[1.08rem]; }
-.prose-bodha strong { @apply font-semibold text-primary; }
-.prose-bodha em { @apply italic; }
-.prose-bodha a { @apply text-primary underline decoration-primary/40 decoration-[1.5px] underline-offset-2 hover:decoration-primary; }
-.prose-bodha ul { @apply my-3.5 ml-1 space-y-1.5; }
-.prose-bodha ul li { @apply relative pl-6; }
-.prose-bodha ul li::before {
-  content: '';
-  position: absolute;
-  left: 0.25rem;
-  top: 0.72em;
-  width: 5px;
-  height: 5px;
-  border-radius: 9999px;
-  background: color-mix(in srgb, rgb(var(--primary)) 55%, transparent);
+.reading h2 {
+  @apply text-[1.25rem];
 }
-.prose-bodha ol { @apply my-3.5 ml-1 space-y-1.5 list-decimal pl-6 marker:text-primary marker:font-semibold; }
-.prose-bodha blockquote { @apply my-4 rounded-r-lg border-l-[3px] border-primary/60 bg-accent/50 py-1 pl-4 pr-3 italic text-foreground/85; }
-.prose-bodha hr { @apply my-6 border-border; }
-.prose-bodha table { @apply my-4 w-full border-collapse text-[0.95rem] font-sans; }
-.prose-bodha th { @apply border-b-2 border-border px-3 py-2 text-left font-semibold text-foreground; }
-.prose-bodha td { @apply border-b border-border/70 px-3 py-2 align-top; }
-.prose-bodha :not(pre) > code { @apply rounded-md bg-accent px-1.5 py-0.5 font-mono text-[0.86em] text-primary; }
-.prose-bodha img { @apply my-4 max-w-full rounded-xl border border-border; }
-
-/* KaTeX math */
-.katex { font-size: 1.04em; }
-.katex-display { @apply my-4 overflow-x-auto overflow-y-hidden pb-1; }
-
-/* ─── Code blocks (warm dark, like an inset book page) ──────────────────── */
-
-.prose-bodha pre {
-  background: var(--code-bg);
-  color: var(--code-ink);
-  @apply my-4 overflow-x-auto rounded-xl border border-black/10 p-4 font-mono text-[0.84rem] leading-relaxed;
+.reading h3 {
+  @apply text-[1.075rem];
 }
-.prose-bodha pre code {
-  background: transparent;
-  padding: 0;
-  color: inherit;
+.reading h4 {
+  @apply text-[0.97rem];
+}
+.reading :first-child {
+  margin-top: 0;
+}
+
+.reading ul,
+.reading ol {
+  padding-left: 1.35em;
+}
+.reading ul {
+  list-style: disc;
+}
+.reading ol {
+  list-style: decimal;
+}
+.reading li {
+  margin-top: 0.4em;
+  padding-left: 0.15em;
+}
+.reading li::marker {
+  color: rgb(var(--muted-foreground) / 0.8);
+}
+.reading li > ul,
+.reading li > ol {
+  margin-top: 0.4em;
+}
+
+.reading a {
+  @apply text-primary underline decoration-primary/35 underline-offset-[3px];
+  transition: text-decoration-color 0.15s ease;
+}
+.reading a:hover {
+  @apply decoration-primary;
+}
+
+.reading strong {
+  @apply font-semibold text-foreground;
+}
+
+.reading blockquote {
+  @apply border-l-2 border-primary/35 pl-4 font-serif italic text-foreground/75;
+}
+
+.reading hr {
+  @apply my-7 border-border;
+}
+
+/* Inline code: warm ink on a faint wash — never a neon highlight. */
+.reading :not(pre) > code {
+  @apply rounded-[5px] bg-foreground/[0.06] px-[0.36em] py-[0.12em] font-mono text-[0.86em] font-normal text-foreground;
+}
+
+.reading table {
+  @apply w-full border-collapse text-reading-sm;
+  display: block;
+  overflow-x: auto;
+}
+.reading th {
+  @apply border-b border-border pb-2 text-left font-sans text-ui-sm font-semibold uppercase tracking-wide text-muted-foreground;
+}
+.reading td {
+  @apply border-b border-border/60 py-2.5 pr-4 align-top;
+}
+
+/* Math (KaTeX) should never overflow on phones. */
+.reading .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+.reading .katex {
+  font-size: 1.02em;
+}
+
+/* Code blocks: dark "ink" panel, quiet chrome. */
+.reading pre {
+  @apply my-4 overflow-x-auto rounded-2xl border border-border/60 bg-code p-4 font-mono text-[13px] leading-[1.65] text-ink;
+  scrollbar-width: thin;
+}
+.reading pre code {
+  @apply bg-transparent p-0 text-inherit;
   font-size: inherit;
 }
 
-/* Highlight.js warm syntax theme */
+/* ─── Syntax highlighting (highlight.js) tuned to the palette ────────────── */
+
 .hljs-comment,
-.hljs-quote { color: #93866c; font-style: italic; }
+.hljs-quote {
+  color: #8f8272;
+  font-style: italic;
+}
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-literal,
-.hljs-doctag,
-.hljs-formula { color: #e8906c; }
+.hljs-type {
+  color: #e0996f;
+}
 .hljs-string,
-.hljs-regexp,
-.hljs-addition,
-.hljs-attribute,
-.hljs-meta .hljs-string { color: #b5c98e; }
+.hljs-attr,
+.hljs-addition {
+  color: #b9c98a;
+}
 .hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: #e5c07b;
+}
+.hljs-title,
+.hljs-name,
+.hljs-section,
+.hljs-function .hljs-title {
+  color: #8fb8dd;
+}
 .hljs-variable,
 .hljs-template-variable,
-.hljs-type,
-.hljs-selector-class,
-.hljs-selector-attr,
-.hljs-selector-pseudo { color: #e6c07a; }
-.hljs-title,
-.hljs-section,
-.hljs-title.class_,
-.hljs-title.function_ { color: #8fc6e3; }
+.hljs-params {
+  color: #dfd6c8;
+}
 .hljs-built_in,
-.hljs-symbol,
-.hljs-bullet,
-.hljs-params { color: #d4a5a5; }
-.hljs-attr,
-.hljs-operator,
-.hljs-property { color: #d8bfa8; }
+.hljs-class .hljs-title {
+  color: #c8a2e0;
+}
 .hljs-meta,
-.hljs-name { color: #a8d5ba; }
-.hljs-deletion { color: #e08d8d; }
+.hljs-doctag {
+  color: #a39687;
+}
+.hljs-deletion {
+  color: #e08a7a;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
 
-/* ─── PDF.js text layer (v4) ─────────────────────────────────────────────── */
+/* ─── Component shorthands ───────────────────────────────────────────────── */
 
-.textLayer {
-  position: absolute;
-  text-align: initial;
-  inset: 0;
-  overflow: clip;
-  line-height: 1;
-  text-size-adjust: none;
-  forced-color-adjust: none;
-  transform-origin: 0 0;
-  z-index: 2;
+@layer components {
+  .icon-btn {
+    @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground disabled:pointer-events-none disabled:opacity-40;
+  }
+  .icon-btn-sm {
+    @apply inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground disabled:pointer-events-none disabled:opacity-40;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-surface px-3 py-1.5 text-ui-sm text-foreground/80 transition-colors hover:border-primary/40 hover:text-foreground;
+  }
+  .panel {
+    @apply rounded-2xl border border-border/70 bg-surface;
+  }
 }
-.textLayer span,
-.textLayer br {
-  color: transparent;
-  position: absolute;
-  white-space: pre;
-  cursor: text;
-  transform-origin: 0% 0%;
+
+/* ─── PDF reader (page-flip) ─────────────────────────────────────────────── */
+
+.flipbook .stf__parent {
+  margin: 0 auto;
 }
-.textLayer ::selection {
-  background: color-mix(in srgb, rgb(var(--primary)) 28%, transparent);
+.flipbook .stf__item {
+  box-shadow: 0 8px 30px -12px rgba(43, 39, 35, 0.35);
 }
-.textLayer .endOfContent {
-  position: absolute;
-  inset: 100% 0 0;
-  z-index: -1;
-  cursor: default;
-  user-select: none;
+.flipbook canvas {
   display: block;
+  background: #fff;
 }
 
-/* ─── Utilities ─────────────────────────────────────────────────────────── */
-
-@layer utilities {
-  .focus-warm {
-    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
-  }
-  .writing-caret::after {
-    content: '';
-    display: inline-block;
-    width: 8px;
-    height: 1.05em;
-    margin-left: 2px;
-    vertical-align: text-bottom;
-    background: color-mix(in srgb, rgb(var(--primary)) 70%, transparent);
-    border-radius: 2px;
-    animation: blink 1s step-end infinite;
-  }
-  .card-warm {
-    @apply rounded-2xl border border-border bg-card shadow-warm;
-  }
-  .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-all hover:bg-primary/90 focus-warm disabled:cursor-not-allowed disabled:opacity-50;
-  }
-  .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-all hover:border-primary/50 hover:bg-accent focus-warm;
-  }
-  .input-warm {
-    @apply w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary/60 focus-warm;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

@@ -1,327 +1,278 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
+import { AnimatePresence, motion } from 'framer-motion'
+import { BookOpen, Boxes, LogOut, Menu, MessageSquare, Moon, MoreHorizontal, Plus, Sun, Trash2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { useAuth } from '@/components/AuthProvider'
+import { BodhaMark, BodhaWordmark } from '@/components/Brand'
 import { authFetch } from '@/lib/firebase/client-token'
-import type { Chat, DocumentMeta } from '@/lib/types'
 import {
-  Plus,
-  MessageCircle,
-  BookOpen,
-  Boxes,
-  Trash2,
-  Menu,
-  X,
-  LogOut,
-  Sun,
-  Moon,
-} from 'lucide-react'
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import type { Chat } from '@/lib/types'
 
 export const CHATS_EVENT = 'bodha:chats-changed'
-
-/** Notify the sidebar (and anyone listening) that the chat list changed. */
 export function announceChatsChanged() {
-  window.dispatchEvent(new CustomEvent(CHATS_EVENT))
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(CHATS_EVENT))
 }
+
+const NAV = [
+  { href: '/chat', label: 'Chat', icon: MessageSquare },
+  { href: '/library', label: 'Library', icon: BookOpen },
+  { href: '/sandbox', label: 'Sandbox', icon: Boxes },
+]
 
 interface AppShellProps {
   children: React.ReactNode
 }
 
+/**
+ * The shell: a quiet sidebar on desktop, a drawer on phones, one content area.
+ * Navigation stays out of the way so the answer is the loudest thing on screen.
+ */
 export default function AppShell({ children }: AppShellProps) {
   const { user, signOut } = useAuth()
   const pathname = usePathname()
-  const [chats, setChats] = useState<Chat[] | null>(null)
-  const [docsCount, setDocsCount] = useState(0)
-  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const router = useRouter()
 
-  const refreshChats = useCallback(async () => {
+  const [chats, setChats] = useState<Chat[] | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [dark, setDark] = useState(false)
+
+  useEffect(() => {
+    setDark(document.documentElement.classList.contains('dark'))
+  }, [])
+
+  const refresh = useCallback(async () => {
     try {
-      const [chatsRes, docsRes] = await Promise.all([
-        authFetch('/api/chats', { cache: 'no-store' }),
-        authFetch('/api/documents', { cache: 'no-store' }),
-      ])
-      if (chatsRes.ok) setChats((await chatsRes.json()).chats ?? [])
-      if (docsRes.ok) setDocsCount(((await docsRes.json()).documents ?? []).length)
+      const res = await authFetch('/api/chats', { cache: 'no-store' })
+      if (res.ok) setChats(((await res.json()).chats ?? []) as Chat[])
+      else setChats([])
     } catch {
       setChats([])
     }
   }, [])
 
   useEffect(() => {
-    refreshChats()
-  }, [refreshChats, pathname])
+    void refresh()
+  }, [refresh, pathname])
 
   useEffect(() => {
-    const handler = () => refreshChats()
-    window.addEventListener(CHATS_EVENT, handler)
-    return () => window.removeEventListener(CHATS_EVENT, handler)
-  }, [refreshChats])
+    const onChange = () => void refresh()
+    window.addEventListener(CHATS_EVENT, onChange)
+    return () => window.removeEventListener(CHATS_EVENT, onChange)
+  }, [refresh])
 
-  // close mobile sidebar on navigation
   useEffect(() => {
-    setSidebarOpen(false)
+    setDrawerOpen(false)
   }, [pathname])
 
-  const firstName = user?.name.split(' ')[0] ?? 'Student'
-
-  return (
-    <div className="flex h-dvh overflow-hidden bg-background">
-      {/* ── Sidebar ─────────────────────────────────────────────────── */}
-      <aside
-        className={cn(
-          'fixed inset-y-0 left-0 z-40 flex w-[280px] flex-col border-r border-border bg-card transition-transform duration-300 md:static md:translate-x-0',
-          sidebarOpen ? 'translate-x-0 shadow-warm-lg' : '-translate-x-full',
-        )}
-      >
-        <div className="flex items-center justify-between px-5 pt-5">
-          <Link href="/chat" className="flex items-center gap-2.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-warm">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                <path d="M12 2c-3.5 3.6-5.5 7-5.5 10.2a5.5 5.5 0 0 0 11 0C17.5 9 15.5 5.6 12 2z" />
-              </svg>
-            </span>
-            <span className="font-display text-lg font-semibold tracking-tight text-foreground">BODHA</span>
-          </Link>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setSidebarOpen(false)}
-            className="md:hidden"
-            aria-label="Close menu"
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-
-        <div className="px-4 pt-5">
-          <Button asChild className="w-full">
-            <Link href="/chat" onClick={() => setSidebarOpen(false)}>
-              <Plus className="h-4 w-4" />
-              New chat
-            </Link>
-          </Button>
-        </div>
-
-        <nav className="mt-5 space-y-0.5 px-3">
-          <NavItem
-            href="/chat"
-            icon={<MessageCircle className="h-4 w-4" />}
-            label="Chats"
-            active={pathname === '/chat' || pathname.startsWith('/chat/')}
-          />
-          <NavItem
-            href="/library"
-            icon={<BookOpen className="h-4 w-4" />}
-            label={`Library${docsCount ? ` · ${docsCount}` : ''}`}
-            active={pathname.startsWith('/library')}
-          />
-          <NavItem
-            href="/sandbox"
-            icon={<Boxes className="h-4 w-4" />}
-            label="Sandbox"
-            active={pathname.startsWith('/sandbox')}
-          />
-        </nav>
-
-        <div className="mx-5 mt-5 mb-2 flex items-center justify-between text-[11px] font-medium uppercase tracking-widest text-muted-foreground/80">
-          Recent
-        </div>
-
-        <ChatList chats={chats} pathname={pathname} />
-
-        {/* footer */}
-        <div className="mt-auto space-y-3 border-t border-border/70 p-4">
-          <ThemeToggleRow />
-          <div className="flex items-center justify-between rounded-xl bg-accent px-3 py-2.5">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <Avatar className="h-8 w-8">
-                {user?.avatarUrl && <AvatarImage src={user.avatarUrl} alt={user.name} />}
-                <AvatarFallback className="bg-primary/15 text-sm font-semibold text-primary">
-                  {firstName?.[0]?.toUpperCase() ?? 'S'}
-                </AvatarFallback>
-              </Avatar>
-              <span className="truncate text-sm font-medium text-foreground">{firstName}</span>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => signOut()}
-              className="text-muted-foreground hover:bg-primary/15 hover:text-primary"
-              title="Sign out"
-              aria-label="Sign out"
-            >
-              <LogOut className="h-4 w-4" />
-            </Button>
-          </div>
-          <p className="text-center text-[11px] text-muted-foreground/70">
-            BODHA AI · created by <span className="font-semibold text-muted-foreground">Srijan Singh & Parv Mishra</span>
-          </p>
-        </div>
-      </aside>
-
-      {/* mobile scrim */}
-      {sidebarOpen && (
-        <Button
-          variant="ghost"
-          aria-label="Close menu"
-          className="fixed inset-0 z-30 animate-fade-in bg-black/30 backdrop-blur-[2px] md:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-
-      {/* ── Main ────────────────────────────────────────────────────── */}
-      <div className="relative flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-3 border-b border-border/60 px-4 py-3 md:hidden">
-          <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
-            <Menu className="h-4 w-4" />
-          </Button>
-          <span className="font-display text-base font-semibold text-foreground">BODHA</span>
-        </header>
-        <div className="min-h-0 flex-1">{children}</div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Pieces ──────────────────────────────────────────────────────────────────
-
-function NavItem({
-  href,
-  icon,
-  label,
-  active,
-}: {
-  href: string
-  icon: React.ReactNode
-  label: string
-  active?: boolean
-}) {
-  return (
-    <Link
-      href={href}
-      className={cn(
-        'flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors',
-        active ? 'bg-primary/15 text-primary' : 'text-foreground/75 hover:bg-accent hover:text-foreground',
-      )}
-    >
-      {icon}
-      <span className="truncate">{label}</span>
-    </Link>
-  )
-}
-
-function ChatList({ chats, pathname }: { chats: Chat[] | null; pathname: string }) {
-  const router = useRouter()
-
-  async function remove(chat: Chat) {
-    if (!window.confirm(`Delete "${chat.title}"? This cannot be undone.`)) return
-    await authFetch(`/api/chats/${chat.id}`, { method: 'DELETE' }).catch(() => {})
-    announceChatsChanged()
-    if (pathname === `/chat/${chat.id}`) router.push('/chat')
-  }
-
-  if (chats === null) {
-    return (
-      <div className="space-y-2 px-4 py-2">
-        {[0, 1, 2, 3].map(i => (
-          <div key={i} className="h-8 animate-pulse-soft rounded-lg bg-accent" />
-        ))}
-      </div>
-    )
-  }
-
-  if (chats.length === 0) {
-    return (
-      <p className="px-5 py-3 text-sm italic text-muted-foreground/70">
-        No conversations yet — ask your first question and it will appear here.
-      </p>
-    )
-  }
-
-  return (
-    <ul className="flex-1 space-y-0.5 overflow-y-auto px-3 pb-2">
-      {chats.map(chat => {
-        const active = pathname === `/chat/${chat.id}`
-        return (
-          <li key={chat.id} className="group relative">
-            <Link
-              href={`/chat/${chat.id}`}
-              className={cn(
-                'flex items-center rounded-xl py-2 pl-3 pr-9 text-sm transition-colors',
-                active ? 'bg-primary/15 font-medium text-primary' : 'text-foreground/75 hover:bg-accent hover:text-foreground',
-              )}
-            >
-              <span className="truncate">{chat.title}</span>
-            </Link>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => remove(chat)}
-              className="absolute right-1.5 top-1/2 h-6 w-6 -translate-y-1/2 opacity-0 transition-all hover:bg-destructive/15 hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
-              aria-label={`Delete ${chat.title}`}
-              title="Delete conversation"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          </li>
-        )
-      })}
-    </ul>
-  )
-}
-
-function ThemeToggleRow() {
-  const [dark, setDark] = useState<boolean | null>(null)
-
-  useEffect(() => {
-    setDark(document.documentElement.classList.contains('dark'))
-  }, [])
-
-  function toggle() {
-    const next = !document.documentElement.classList.contains('dark')
+  function toggleTheme() {
+    const next = !dark
+    setDark(next)
     document.documentElement.classList.toggle('dark', next)
     try {
       localStorage.setItem('bodha:theme', next ? 'dark' : 'light')
     } catch {}
-    setDark(next)
-    // theme-color follow-up for mobile chrome
-    setTimeout(() => {
-      const meta = document.querySelector('meta[name="theme-color"]')
-      meta?.setAttribute('content', next ? '#1A1714' : '#FAF7F2')
-    }, 50)
   }
 
-  return (
-    <Button
-      variant="ghost"
-      onClick={toggle}
-      className="w-full justify-between text-foreground/75"
-    >
-      <span className="flex items-center gap-3">
-        {dark ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-        {dark ? 'Warm night' : 'Warm paper'}
-      </span>
-      <span
-        className={cn(
-          'relative inline-flex h-5 w-9 items-center rounded-full transition-colors',
-          dark ? 'bg-primary' : 'bg-border',
+  async function removeChat(id: string) {
+    setChats(prev => (prev ? prev.filter(c => c.id !== id) : prev))
+    await authFetch(`/api/chats/${id}`, { method: 'DELETE' }).catch(() => {})
+    announceChatsChanged()
+    if (pathname === `/chat/${id}`) router.push('/chat')
+  }
+
+  const newChat = () => {
+    setDrawerOpen(false)
+    router.push('/chat')
+  }
+
+  const sidebar = (
+    <div className="flex h-full flex-col bg-surface/60">
+      <div className="flex items-center justify-between px-4 pb-2 pt-4">
+        <Link href="/chat" className="inline-flex items-center gap-2" aria-label="BODHA home">
+          <BodhaMark size={30} />
+          <BodhaWordmark size="md" />
+        </Link>
+      </div>
+
+      <div className="px-3 pb-2">
+        <button
+          type="button"
+          onClick={newChat}
+          className="flex w-full items-center gap-2 rounded-xl border border-border/80 bg-background px-3 py-2.5 text-ui font-medium text-foreground shadow-soft transition-colors hover:border-primary/40"
+        >
+          <Plus className="h-4 w-4 text-primary" strokeWidth={1.9} />
+          New chat
+        </button>
+      </div>
+
+      <nav className="px-3 py-1">
+        {NAV.map(({ href, label, icon: Icon }) => {
+          const active = href === '/chat' ? pathname.startsWith('/chat') : pathname.startsWith(href)
+          return (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                'flex items-center gap-2.5 rounded-lg px-3 py-2 text-ui transition-colors',
+                active ? 'bg-foreground/[0.06] font-medium text-foreground' : 'text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground',
+              )}
+            >
+              <Icon className="h-4 w-4" strokeWidth={1.75} />
+              {label}
+            </Link>
+          )
+        })}
+      </nav>
+
+      <div className="mt-3 flex items-center justify-between px-4 pb-1.5">
+        <span className="text-ui-xs font-medium uppercase tracking-[0.12em] text-muted-foreground/70">Recents</span>
+      </div>
+
+      <div className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+        {chats === null && (
+          <div className="space-y-1 px-1">
+            {[0, 1, 2].map(i => (
+              <div key={i} className="h-8 animate-pulse-soft rounded-lg bg-foreground/[0.04]" />
+            ))}
+          </div>
         )}
-      >
-        <span
-          className={cn(
-            'absolute h-3.5 w-3.5 rounded-full bg-background shadow transition-all',
-            dark ? 'left-[18px]' : 'left-[3px]',
-          )}
-        />
-      </span>
-    </Button>
+        {chats?.length === 0 && (
+          <p className="px-3 py-2 font-serif text-reading-sm italic text-muted-foreground/80">
+            No conversations yet — ask your first question.
+          </p>
+        )}
+        <ul className="space-y-0.5">
+          {chats?.map(chat => {
+            const active = pathname === `/chat/${chat.id}`
+            return (
+              <li key={chat.id} className="group/item relative">
+                <Link
+                  href={`/chat/${chat.id}`}
+                  className={cn(
+                    'block truncate rounded-lg py-2 pl-3 pr-8 text-ui transition-colors',
+                    active ? 'bg-foreground/[0.06] font-medium text-foreground' : 'text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground',
+                  )}
+                >
+                  {chat.title}
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => void removeChat(chat.id)}
+                  aria-label={`Delete ${chat.title}`}
+                  className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive group-hover/item:block"
+                >
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.7} />
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+
+      <div className="border-t border-border/60 p-3">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left transition-colors hover:bg-foreground/[0.04]"
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/12 font-serif text-ui font-semibold text-primary">
+                {(user?.name ?? 'S').trim().charAt(0).toUpperCase()}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-ui font-medium text-foreground">{user?.name}</span>
+                <span className="block truncate text-ui-sm text-muted-foreground">{user?.email}</span>
+              </span>
+              <MoreHorizontal className="h-4 w-4 shrink-0 text-muted-foreground" strokeWidth={1.7} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="top" className="w-56">
+            <DropdownMenuLabel className="font-normal">
+              <span className="block text-ui-sm text-muted-foreground">Signed in as</span>
+              <span className="block truncate text-ui font-medium">{user?.email}</span>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={toggleTheme} className="cursor-pointer">
+              {dark ? <Sun className="mr-2 h-4 w-4" strokeWidth={1.7} /> : <Moon className="mr-2 h-4 w-4" strokeWidth={1.7} />}
+              {dark ? 'Paper mode' : 'Night mode'}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void signOut()} className="cursor-pointer text-destructive focus:text-destructive">
+              <LogOut className="mr-2 h-4 w-4" strokeWidth={1.7} />
+              Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="flex h-dvh overflow-hidden bg-background">
+      {/* Desktop sidebar */}
+      <aside className="hidden w-sidebar shrink-0 border-r border-border/70 md:block">{sidebar}</aside>
+
+      {/* Mobile drawer */}
+      <AnimatePresence>
+        {drawerOpen && (
+          <div className="fixed inset-0 z-50 md:hidden">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18 }}
+              className="absolute inset-0 bg-foreground/25 backdrop-blur-[2px]"
+              onClick={() => setDrawerOpen(false)}
+            />
+            <motion.aside
+              initial={{ x: -300 }}
+              animate={{ x: 0 }}
+              exit={{ x: -300 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 38 }}
+              className="absolute inset-y-0 left-0 w-[86%] max-w-[304px] border-r border-border/70 bg-surface shadow-lift"
+            >
+              <button
+                type="button"
+                onClick={() => setDrawerOpen(false)}
+                className="icon-btn absolute right-2 top-2.5 z-10"
+                aria-label="Close menu"
+              >
+                <X className="h-4 w-4" strokeWidth={1.8} />
+              </button>
+              {sidebar}
+            </motion.aside>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Content */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex h-13 shrink-0 items-center gap-2 border-b border-border/60 bg-background/90 px-3 py-2 backdrop-blur md:hidden">
+          <button type="button" onClick={() => setDrawerOpen(true)} className="icon-btn" aria-label="Open menu">
+            <Menu className="h-[18px] w-[18px]" strokeWidth={1.8} />
+          </button>
+          <Link href="/chat" className="inline-flex items-center gap-2" aria-label="BODHA home">
+            <BodhaMark size={26} />
+            <BodhaWordmark size="sm" />
+          </Link>
+          <div className="flex-1" />
+          <button type="button" onClick={newChat} className="icon-btn" aria-label="New chat">
+            <Plus className="h-[18px] w-[18px]" strokeWidth={1.9} />
+          </button>
+        </header>
+
+        <main className="relative min-h-0 flex-1 overflow-hidden">{children}</main>
+      </div>
+    </div>
   )
 }
-
-export type { Chat, DocumentMeta }

@@ -22,8 +22,8 @@ import { verifyPassword } from '@/lib/password'
  *   users/{uid}/chats/{chatId}/messages/{mid}    messages
  *   users/{uid}/documents/{docId}               document metadata + extracted text
  *
- * Firebase Storage:
- *   users/{uid}/uploads/{docId}                 the raw uploaded file
+ * Raw uploads (Firebase Storage needs billing, so we do not depend on it):
+ *   users/{uid}/documents/{docId}/chunks/{n}    the uploaded file, in ~700 KB parts
  *
  * Every lookup is owner-scoped (ownerId param from the authenticated request),
  * so a signed-in user can never touch another user's data at the storage layer.
@@ -37,6 +37,10 @@ import { verifyPassword } from '@/lib/password'
 
 // Firestore docs are limited to ~1 MB; keep the extracted text comfortably under.
 const TEXT_LIMIT = 250_000
+
+// Raw file parts. Comfortably below the 1 MiB document limit so a 20 MB book is
+// a handful of part documents rather than a failed upload.
+const CHUNK_BYTES = 700 * 1024
 
 function toISO(v: unknown): string {
   if (v && typeof v === 'object' && 'toDate' in (v as Record<string, unknown>)) {
@@ -330,11 +334,47 @@ export class FirebaseStore implements Store {
       sizeBytes: data.sizeBytes ?? 0,
       pageCount: data.pageCount ?? null,
       createdAt: toISO(data.createdAt),
+      hasText: typeof data.textContent === 'string' && data.textContent.trim().length > 0,
     }
   }
 
-  private storagePath(userId: string, docId: string): string {
-    return `users/${userId}/uploads/${docId}`
+  /** Writes the uploaded file as part documents (Storage-free, works on Vercel). */
+  private async writeChunks(
+    admin: AdminServices,
+    userId: string,
+    docId: string,
+    content: Buffer,
+  ): Promise<number> {
+    if (!content.length) return 0
+    const ref = this.dbDocuments(admin, userId).doc(docId)
+    const total = Math.ceil(content.length / CHUNK_BYTES)
+    let batch = admin.db.batch()
+    let pending = 0
+    for (let i = 0; i < total; i++) {
+      const part = content.subarray(i * CHUNK_BYTES, Math.min((i + 1) * CHUNK_BYTES, content.length))
+      batch.set(ref.collection('chunks').doc(String(i).padStart(4, '0')), { index: i, bytes: Buffer.from(part) })
+      pending += 1
+      if (pending === 400) {
+        await batch.commit()
+        batch = admin.db.batch()
+        pending = 0
+      }
+    }
+    if (pending) await batch.commit()
+    return total
+  }
+
+  /** Re-assembles an uploaded file from its part documents. */
+  private async readChunks(admin: AdminServices, userId: string, docId: string): Promise<Buffer> {
+    const snap = await this.dbDocuments(admin, userId).doc(docId).collection('chunks').orderBy('index').get()
+    if (snap.empty) return Buffer.alloc(0)
+    const parts = snap.docs.map(d => {
+      const raw = d.data().bytes
+      if (Buffer.isBuffer(raw)) return raw as Buffer
+      if (raw && typeof raw === 'object' && 'value' in raw) return Buffer.from((raw as { value: string }).value, 'base64')
+      return Buffer.alloc(0)
+    })
+    return Buffer.concat(parts)
   }
 
   async createDocument(doc: DocumentRecord): Promise<DocumentMeta> {
@@ -357,16 +397,16 @@ export class FirebaseStore implements Store {
         createdAt: new Date(),
       })
 
-    // Raw bytes live in Firebase Storage; the extracted text is already in
-    // Firestore, so a Storage hiccup (bucket not created yet, quota) must not
-    // fail the whole upload.
+    // The raw bytes are saved as part documents next to the metadata so the
+    // reader and the OCR flow can fetch them on any device, with no Storage
+    // bucket and no billing account required.
     try {
-      await admin.storage
-        .bucket()
-        .file(this.storagePath(doc.userId, doc.id))
-        .save(doc.content, { contentType: doc.mime })
+      const parts = await this.writeChunks(admin, doc.userId, doc.id, doc.content)
+      if (parts) {
+        await this.dbDocuments(admin, doc.userId).doc(doc.id).set({ chunkCount: parts }, { merge: true })
+      }
     } catch (err) {
-      console.warn('[store] Firebase Storage upload failed:', (err as Error).message)
+      console.warn('[store] Storing the uploaded file failed:', (err as Error).message)
     }
 
     return { ...doc, createdAt: new Date().toISOString() }
@@ -388,10 +428,9 @@ export class FirebaseStore implements Store {
 
     let content: Buffer = Buffer.alloc(0)
     try {
-      const [buf] = await admin.storage.bucket().file(this.storagePath(ownerId, id)).download()
-      content = buf
-    } catch {
-      // Bytes may be absent for small text documents kept inline.
+      content = await this.readChunks(admin, ownerId, id)
+    } catch (err) {
+      console.warn('[store] Reading the uploaded file failed:', (err as Error).message)
     }
 
     return { ...meta, content, textContent: data.textContent ?? '' }
@@ -400,10 +439,11 @@ export class FirebaseStore implements Store {
   async deleteDocument(id: string, ownerId?: string): Promise<void> {
     if (!ownerId) return
     const admin = await this.admin()
-    try {
-      await admin.storage.bucket().file(this.storagePath(ownerId, id)).delete()
-    } catch {}
-    await this.dbDocuments(admin, ownerId).doc(id).delete()
+    const ref = this.dbDocuments(admin, ownerId).doc(id)
+    // recursive delete until Firestore's own helper is available here.
+    await admin.db.recursiveDelete(ref).catch(async () => {
+      await ref.delete().catch(() => {})
+    })
   }
 
   async updateDocumentText(id: string, ownerId: string, text: string): Promise<void> {

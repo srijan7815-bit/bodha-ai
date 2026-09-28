@@ -39,9 +39,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing file' }, { status: 400 })
   }
 
-  const MAX_SIZE = 20 * 1024 * 1024 // 20 MB
+  // Serverless request bodies are capped at ~4.5 MB, so this is the honest
+  // ceiling for a single upload. The file itself is then kept in Firestore as
+  // part documents (no Storage bucket required) and can be read back anywhere.
+  const MAX_SIZE = 4 * 1024 * 1024
   if (file.size > MAX_SIZE) {
-    return NextResponse.json({ error: 'That file is too large (max 20 MB).' }, { status: 413 })
+    return NextResponse.json(
+      { error: 'That file is larger than 4 MB. Upload a chapter at a time, or compress the PDF and try again.' },
+      { status: 413 },
+    )
   }
 
   const mime = file.type || 'application/octet-stream'

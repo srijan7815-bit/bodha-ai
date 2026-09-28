@@ -1,639 +1,642 @@
 'use client'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { AnimatePresence, motion } from 'framer-motion'
+import { ArrowDown, BookOpen, Check, Copy, FileText, GraduationCap, Lightbulb, RefreshCw, Sigma, Sparkles, SquarePen, Volume2, VolumeX, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
-import type { Chat, DocumentMeta, Message, User } from '@/lib/types'
 import { authFetch } from '@/lib/firebase/client-token'
-import { useDictation, useSpeaker, speechSupported } from '@/lib/voice'
-import Markdown, { type RunnableLang } from '@/components/Markdown'
-import SandboxDrawer from '@/components/SandboxDrawer'
+import { useSpeaker, useDictation } from '@/lib/voice'
+import Markdown from '@/components/Markdown'
+import Composer from '@/components/Composer'
+import LiveMode, { type LiveState } from '@/components/LiveMode'
 import DocPicker from '@/components/DocPicker'
 import { announceChatsChanged } from '@/components/AppShell'
-const PENDING_KEY = 'bodha:pending-message'
-const AUTOSPEAK_KEY = 'bodha:auto-speak'
-const SUGGESTIONS = [
-  { icon: '🌱', text: 'Explain photosynthesis with an everyday analogy' },
-  { icon: '∑', text: 'Help me understand quadratic equations step by step' },
-  { icon: '🇪🇸', text: 'Teach me ten Spanish words for food, with a mini quiz' },
-  { icon: '⌨️', text: 'Show me a bouncing ball animation in HTML and explain the code' },
-  { icon: '🧪', text: 'Why does ice float on water? Walk me through the physics' },
-  { icon: '📜', text: 'Summarize the causes of World War I like a story' },
-]
-interface Props {
-  user: User
+import type { Chat, DocumentMeta, Message } from '@/lib/types'
+
+interface ChatViewProps {
   chat: Chat | null
   initialMessages: Message[]
   documentMeta: DocumentMeta | null
+  /** `/chat?document=<id>` — the Library hands a document straight to the chat. */
+  initialDocumentId?: string | null
+  /** `/chat?q=<text>` — the reader's “ask about this paragraph” tab. */
+  initialDraft?: string | null
 }
-export default function ChatView({ user, chat, initialMessages, documentMeta }: Props) {
-  const router = useRouter()
+
+const DRAFT_PREFIX = 'bodha:draft:'
+const DRAFT_MAX_AGE = 20 * 60 * 1000
+
+const SUGGESTIONS = [
+  { icon: Sigma, text: 'Explain the chain rule with a simple example' },
+  { icon: Lightbulb, text: 'Why is the sky blue? Teach me step by step' },
+  { icon: GraduationCap, text: 'Quiz me on the French Revolution' },
+  { icon: BookOpen, text: 'Summarise the chapter I uploaded' },
+]
+
+function deriveTitle(text: string) {
+  const clean = text.trim().replace(/\s+/g, ' ')
+  return clean.length > 52 ? `${clean.slice(0, 52)}…` : clean || 'New chat'
+}
+
+export default function ChatView({ chat, initialMessages, documentMeta, initialDocumentId, initialDraft }: ChatViewProps) {
   const [messages, setMessages] = useState<Message[]>(initialMessages)
-  const [streaming, setStreaming] = useState(false)
-  const [streamText, setStreamText] = useState('')
-  const [input, setInput] = useState('')
+  const [chatId, setChatId] = useState<string | null>(chat?.id ?? null)
+  const [title, setTitle] = useState(chat?.title ?? 'New chat')
+  const [draft, setDraft] = useState('')
+  const [streaming, setStreaming] = useState('')
+  const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [docChip, setDocChip] = useState<DocumentMeta | null>(documentMeta)
-  const [docPickerOpen, setDocPickerOpen] = useState(false)
-  const [autoSpeak, setAutoSpeak] = useState(false)
-  const [notices, setNotices] = useState<string[]>([])
-  const [sandboxCode, setSandboxCode] = useState<{ lang: RunnableLang; code: string } | null>(null)
-  const [thinkingPhase, setThinkingPhase] = useState(false)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const pinnedToBottomRef = useRef(true)
+  const [busy, setBusy] = useState(false)
+  const [doc, setDoc] = useState<DocumentMeta | null>(documentMeta)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [liveOpen, setLiveOpen] = useState(false)
+  const [liveMinimized, setLiveMinimized] = useState(false)
+  const [readingId, setReadingId] = useState<string | null>(null)
+  const [atBottom, setAtBottom] = useState(true)
+
+  const scrollRef = useRef<HTMLDivElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+
   const speaker = useSpeaker()
+  const dictation = useDictation(text => setDraft(prev => (prev ? `${prev} ${text}` : text)))
+
+  // ─── Draft autosave (restore anything under 20 minutes old) ───────────────
   useEffect(() => {
+    const key = `${DRAFT_PREFIX}${chatId ?? 'new'}`
     try {
-      setAutoSpeak(localStorage.getItem(AUTOSPEAK_KEY) === '1')
+      const raw = sessionStorage.getItem(key) ?? localStorage.getItem(key)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as { text?: string; at?: number }
+      if (parsed?.text && typeof parsed.at === 'number' && Date.now() - parsed.at < DRAFT_MAX_AGE) {
+        setDraft(parsed.text)
+      } else {
+        localStorage.removeItem(key)
+      }
     } catch {}
-  }, [])
-  const toggleAutoSpeak = () => {
-    setAutoSpeak(v => {
-      const next = !v
+  }, [chatId])
+
+  useEffect(() => {
+    const key = `${DRAFT_PREFIX}${chatId ?? 'new'}`
+    const id = setTimeout(() => {
       try {
-        localStorage.setItem(AUTOSPEAK_KEY, next ? '1' : '0')
+        if (draft.trim()) localStorage.setItem(key, JSON.stringify({ text: draft, at: Date.now() }))
+        else localStorage.removeItem(key)
       } catch {}
-      return next
-    })
-  }
+    }, 400)
+    return () => clearTimeout(id)
+  }, [draft, chatId])
+
+  const clearDraft = useCallback(() => {
+    try {
+      localStorage.removeItem(`${DRAFT_PREFIX}${chatId ?? 'new'}`)
+    } catch {}
+  }, [chatId])
+
+  // Text handed over from the reader ("ask about this paragraph").
+  useEffect(() => {
+    if (initialDraft) setDraft(initialDraft)
+  }, [initialDraft])
+
+  // A document handed over from the Library.
+  useEffect(() => {
+    if (!initialDocumentId || doc) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await authFetch(`/api/documents/${initialDocumentId}?meta=1`, { cache: 'no-store' })
+        if (!res.ok) return
+        const data = await res.json()
+        if (!cancelled && data.document) setDoc(data.document as DocumentMeta)
+      } catch {}
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [initialDocumentId, doc])
+
   // ─── Scrolling ────────────────────────────────────────────────────────────
-  const onScroll = () => {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const el = scrollRef.current
     if (!el) return
-    pinnedToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  }
-  const scrollToBottom = useCallback((smooth = true) => {
-    bottomRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' })
+    el.scrollTo({ top: el.scrollHeight, behavior })
   }, [])
+
+  useLayoutEffect(() => {
+    if (atBottom) scrollToBottom(messages.length > 2 ? 'smooth' : 'auto')
+  }, [messages, streaming, atBottom, scrollToBottom])
+
   useEffect(() => {
-    if (pinnedToBottomRef.current) scrollToBottom(false)
-  }, [messages, streamText, scrollToBottom])
-  // ─── Streaming ───────────────────────────────────────────────────────────
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => {
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+      setAtBottom(distance < 120)
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Stop speaking when leaving the page.
+  useEffect(() => () => speaker.stop(), [speaker])
+
+  // ─── Streaming ────────────────────────────────────────────────────────────
   const runStream = useCallback(
-    async (payload: { content?: string; regenerate?: boolean }) => {
-      if (!chat || streaming) return
-      setStreaming(true)
+    async (targetChatId: string, body: { content?: string; regenerate?: boolean }, optimistic?: Message) => {
+      setBusy(true)
       setError(null)
-      setStreamText('')
-      setNotices([])
-      setThinkingPhase(true)
-      if (!payload.regenerate && payload.content) {
-        // optimistic user bubble
-        setMessages(prev => [
-          ...prev,
-          {
-            id: `optimistic-${Date.now()}`,
-            chatId: chat.id,
-            role: 'user',
-            content: payload.content!,
-            createdAt: new Date().toISOString(),
-          },
-        ])
-      }
-      if (payload.regenerate) {
-        setMessages(prev => {
-          const next = [...prev]
-          while (next.length && next[next.length - 1].role === 'assistant') next.pop()
-          return next
-        })
-      }
-      pinnedToBottomRef.current = true
-      const ctl = new AbortController()
-      abortRef.current = ctl
-      let full = ''
+      setNotice(null)
+      setStreaming('')
+
+      const controller = new AbortController()
+      abortRef.current = controller
+      let streamed = ''
+
       try {
-        const res = await authFetch(`/api/chats/${chat.id}/messages`, {
+        const res = await authFetch(`/api/chats/${targetChatId}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: ctl.signal,
+          body: JSON.stringify(body),
+          signal: controller.signal,
         })
+
         if (!res.ok || !res.body) {
-          const data = await res.json().catch(() => null)
-          throw new Error(data?.errorMessage ?? 'The tutor could not be reached. Please try again.')
+          const data = await res.json().catch(() => ({}))
+          setError(data.errorMessage ?? data.error ?? 'I could not answer just now. Please try again.')
+          setBusy(false)
+          return
         }
+
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
+
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
           buffer += decoder.decode(value, { stream: true })
-          let nl: number
-          while ((nl = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.slice(0, nl)
-            buffer = buffer.slice(nl + 1)
+          const lines = buffer.split('\n')
+          buffer = lines.pop() ?? ''
+
+          for (const line of lines) {
             if (!line.trim()) continue
-            let evt: { t: string; v?: string; message?: Message | null; errorMessage?: string }
+            let frame: { t: string; v?: string; message?: Message | null; errorMessage?: string }
             try {
-              evt = JSON.parse(line)
+              frame = JSON.parse(line)
             } catch {
               continue
             }
-            if (evt.t === 'user' && evt.message) {
-              // replace optimistic bubble with the saved one
-              setMessages(prev => prev.map(m => (m.id.startsWith('optimistic-') ? evt.message! : m)))
-            } else if (evt.t === 'delta' && evt.v) {
-              setThinkingPhase(false)
-              full += evt.v
-              setStreamText(full)
-            } else if (evt.t === 'notice' && evt.v) {
-              setNotices(prev => (prev.includes(evt.v!) ? prev : [...prev, evt.v!]))
-            } else if (evt.t === 'error' && evt.errorMessage) {
-              setError(evt.errorMessage)
-            } else if (evt.t === 'done') {
-              setStreamText('')
-              if (evt.message) setMessages(prev => [...prev, evt.message!])
-              if (evt.message && autoSpeak) speaker.speak(evt.message.content)
-              announceChatsChanged()
+
+            if (frame.t === 'user' && frame.message) {
+              const persisted = frame.message
+              setMessages(prev => {
+                const idx = optimistic ? prev.findIndex(m => m.id === optimistic.id) : -1
+                if (idx === -1) return [...prev, persisted]
+                const next = [...prev]
+                next[idx] = persisted
+                return next
+              })
+            } else if (frame.t === 'delta' && frame.v) {
+              streamed += frame.v
+              setStreaming(streamed)
+            } else if (frame.t === 'notice' && frame.v) {
+              setNotice(frame.v)
+            } else if (frame.t === 'done') {
+              if (frame.message) setMessages(prev => [...prev, frame.message as Message])
+              setStreaming('')
+            } else if (frame.t === 'error') {
+              if (frame.errorMessage) setError(frame.errorMessage)
             }
           }
         }
       } catch (err) {
-        if ((err as Error).name !== 'AbortError') {
-          setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
-        }
-        if (full.trim()) {
-          setStreamText('')
-          setMessages(prev => [
-            ...prev,
-            {
-              id: `partial-${Date.now()}`,
-              chatId: chat.id,
-              role: 'assistant',
-              content: full,
-              createdAt: new Date().toISOString(),
-            },
-          ])
+        if (!controller.signal.aborted) {
+          console.warn('[chat] stream failed', err)
+          setError('The connection dropped. Your message is saved — try again.')
         }
       } finally {
-        setStreaming(false)
-        setThinkingPhase(false)
-        setStreamText('')
+        if (streamed.trim()) setStreaming('')
+        setBusy(false)
         abortRef.current = null
+        announceChatsChanged()
       }
     },
-    [chat, streaming, autoSpeak, speaker],
+    [],
   )
-  // ─── Sending ────────────────────────────────────────────────────────────
-  const send = useCallback(
-    async (raw: string) => {
-      const content = raw.trim()
-      if (!content || streaming) return
-      setInput('')
-      // clear autosaved draft on send
-      try {
-        sessionStorage.removeItem(PENDING_KEY)
-      } catch {}
-      if (chat) {
-        await runStream({ content })
-      } else {
-        // first message from the fresh-chat page → create the chat, then
-        // hand the text to the new page so it streams there
-        try {
-          const res = await authFetch('/api/chats', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: content.slice(0, 52) }),
-          })
-          const data = await res.json()
-          if (!res.ok) throw new Error(data?.error ?? 'Could not start the conversation.')
-          try {
-            sessionStorage.setItem(PENDING_KEY, content)
-          } catch {}
-          announceChatsChanged()
-          router.replace(`/chat/${data.chat.id}`)
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Could not start the conversation.')
-        }
-      }
-    },
-    [chat, streaming, router, runStream],
-  )
-  // auto-send a pending first message once the chat page mounts
-  const pendingConsumed = useRef(false)
-  useEffect(() => {
-    if (!chat || pendingConsumed.current) return
-    let pending: string | null = null
+
+  const send = useCallback(async () => {
+    const text = draft.trim()
+    if (!text || busy) return
+    setError(null)
+    dictation.stop()
+    speaker.stop()
+
+    let targetId = chatId
     try {
-      pending = sessionStorage.getItem(PENDING_KEY)
-      sessionStorage.removeItem(PENDING_KEY)
-    } catch {}
-    if (pending && messages.length === 0) {
-      pendingConsumed.current = true
-      runStream({ content: pending })
+      if (!targetId) {
+        const res = await authFetch('/api/chats', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: deriveTitle(text), documentId: doc?.id ?? null }),
+        })
+        if (!res.ok) throw new Error('create failed')
+        const data = await res.json()
+        targetId = data.chat.id as string
+        setChatId(targetId)
+        setTitle(data.chat.title as string)
+        window.history.replaceState(null, '', `/chat/${targetId}`)
+        announceChatsChanged()
+      }
+    } catch {
+      setError('I could not start a new conversation. Please try again.')
+      return
     }
-  }, [chat, messages.length, runStream])
-  // ─── Dictation ──────────────────────────────────────────────────────────
-  const dictation = useDictation(finalText => {
-    setInput(prev => (prev ? `${prev} ${finalText}` : finalText))
-  })
-  // ─── Sandbox bridge ────────────────────────────────────────────────────
-  const openSandbox = useCallback((lang: RunnableLang, code: string) => {
-    setSandboxCode({ lang, code })
-  }, [])
-  const firstName = user.name.split(' ')[0]
-  const greeting = useMemo(() => {
-    const h = new Date().getHours()
-    if (h < 5) return 'Studying late'
-    if (h < 12) return 'Good morning'
-    if (h < 17) return 'Good afternoon'
-    return 'Good evening'
-  }, [])
-  const lastAssistantId = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'assistant') return messages[i].id
+
+    const optimistic: Message = {
+      id: `local-${Date.now()}`,
+      chatId: targetId,
+      role: 'user',
+      content: text,
+      createdAt: new Date().toISOString(),
     }
-    return null
-  }, [messages])
+    setMessages(prev => [...prev, optimistic])
+    setDraft('')
+    clearDraft()
+    setAtBottom(true)
+    await runStream(targetId, { content: text }, optimistic)
+  }, [busy, chatId, clearDraft, dictation, doc, draft, runStream, speaker])
+
+  const regenerate = useCallback(async () => {
+    if (!chatId || busy) return
+    speaker.stop()
+    setMessages(prev => {
+      const next = [...prev]
+      while (next.length && next[next.length - 1].role === 'assistant') next.pop()
+      return next
+    })
+    setAtBottom(true)
+    await runStream(chatId, { regenerate: true })
+  }, [busy, chatId, runStream, speaker])
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort()
+    setBusy(false)
+    setStreaming('')
+  }, [])
+
+  const speak = useCallback(
+    (message: Message) => {
+      if (readingId === message.id && speaker.speaking) {
+        speaker.stop()
+        setReadingId(null)
+        return
+      }
+      setReadingId(message.id)
+      setLiveOpen(true)
+      setLiveMinimized(false)
+      void speaker.speak(message.content).finally(() => setReadingId(current => (current === message.id ? null : current)))
+    },
+    [readingId, speaker],
+  )
+
+  const liveState: LiveState = busy ? 'thinking' : speaker.speaking ? 'speaking' : dictation.listening ? 'listening' : 'idle'
+  const lastAssistantId = [...messages].reverse().find(m => m.role === 'assistant')?.id
+
   return (
-    <div className="relative flex h-full min-h-0 flex-col bg-background">
-      {/* header */}
-      <div className="relative z-10 flex items-center gap-3 border-b border-border/60 bg-background/85 px-4 py-3 backdrop-blur md:px-8">
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate font-display text-[15px] font-semibold text-foreground">
-            {chat?.title ?? 'New chat'}
-          </h1>
-          {docChip && (
-            <button
-              onClick={async () => {
-                if (!chat) return
-                await authFetch(`/api/chats/${chat.id}`, {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ documentId: null }),
-                })
-                setDocChip(null)
-              }}
-              className="group mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary"
-              title="Unlink document"
+    <div className="flex h-full min-h-0">
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* ── Header ─────────────────────────────────────────────────────── */}
+        <header className="z-20 flex h-13 shrink-0 items-center gap-2 border-b border-border/60 bg-background/85 px-3 py-2 backdrop-blur md:px-6">
+          <h1 className="min-w-0 flex-1 truncate text-ui font-medium text-foreground/90">{title}</h1>
+
+          {doc && (
+            <Link
+              href={`/library/${doc.id}`}
+              className="hidden max-w-[220px] items-center gap-1.5 rounded-full border border-border/70 bg-surface px-2.5 py-1 text-ui-sm text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground sm:inline-flex"
+              title={`Reading: ${doc.title}`}
             >
-              <span>📖</span>
-              <span className="max-w-[240px] truncate group-hover:line-through">{docChip.title}</span>
-              <span className="opacity-0 group-hover:opacity-100">×</span>
-            </button>
+              <FileText className="h-3.5 w-3.5 shrink-0" strokeWidth={1.7} />
+              <span className="truncate">{doc.title}</span>
+            </Link>
           )}
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={toggleAutoSpeak}
-          className={cn(
-            autoSpeak ? 'border-primary/40 bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground',
-          )}
-          title={speaker.supported ? 'Read new answers aloud automatically' : 'Speech is not supported in this browser'}
-        >
-          <span aria-hidden>{speaker.speaking ? '🔊' : autoSpeak ? '🗣️' : '🔇'}</span>
-          {speaker.speaking ? 'Speaking…' : autoSpeak ? 'Auto-read on' : 'Auto-read off'}
-        </Button>
-        {speaker.speaking && (
-          <Button variant="outline" size="sm" onClick={speaker.stop} className="text-muted-foreground hover:text-primary">
-            Stop
-          </Button>
-        )}
-      </div>
-      {/* scroll area */}
-      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl px-4 pb-6 pt-8 md:px-6">
-          {/* empty state */}
-          {messages.length === 0 && !streaming && (
-            <div className="animate-fade-up select-none pt-10 md:pt-20">
-              <p className="font-serif text-lg italic text-muted-foreground">{greeting},</p>
-              <h2 className="mt-1 font-display text-4xl font-semibold tracking-tight text-foreground md:text-5xl">
-                {firstName} <span className="text-primary">🪔</span>
-              </h2>
-              <p className="mt-4 max-w-md font-serif text-lg italic leading-relaxed text-muted-foreground">
-                What shall we learn today? Ask me anything — or speak it aloud.
-              </p>
-              <div className="mt-8 grid gap-2.5 sm:grid-cols-2">
-                {SUGGESTIONS.map(s => (
-                  <button
-                    key={s.text}
-                    onClick={() => send(s.text)}
-                    className="card-warm flex items-start gap-3 p-4 text-left text-sm text-foreground/85 transition-all hover:-translate-y-0.5 hover:border-primary/40"
+
+          <button
+            type="button"
+            onClick={() => {
+              setLiveOpen(open => !open)
+              setLiveMinimized(false)
+            }}
+            aria-pressed={liveOpen}
+            title="Live Mode — talk with BODHA's face"
+            className={cn(
+              'inline-flex h-8 items-center gap-1.5 rounded-full border px-2.5 text-ui-sm transition-colors',
+              liveOpen
+                ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'border-border/70 bg-surface text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <Sparkles className="h-3.5 w-3.5" strokeWidth={1.8} />
+            <span className="hidden sm:inline">Live</span>
+          </button>
+        </header>
+
+        {/* ── Messages ───────────────────────────────────────────────────── */}
+        <div ref={scrollRef} className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-read px-4 pb-8 pt-6 md:px-6">
+            {messages.length === 0 && !streaming && (
+              <EmptyState hasDocument={!!doc} docTitle={doc?.title} onPick={text => setDraft(text)} />
+            )}
+
+            <div className="space-y-6">
+              <AnimatePresence initial={false}>
+                {messages.map((message, index) => (
+                  <motion.div
+                    key={message.id}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
                   >
-                    <span className="text-lg leading-none">{s.icon}</span>
-                    {s.text}
-                  </button>
+                    {message.role === 'user' ? (
+                      <UserMessage content={message.content} />
+                    ) : (
+                      <AssistantMessage
+                        content={message.content}
+                        speaking={readingId === message.id && speaker.speaking}
+                        onSpeak={() => speak(message)}
+                        onRegenerate={message.id === lastAssistantId && !busy ? regenerate : undefined}
+                        showActions={!busy || index < messages.length - 1}
+                      />
+                    )}
+                  </motion.div>
                 ))}
-              </div>
-            </div>
-          )}
-          {/* messages */}
-          {messages.length > 0 && (
-            <div className="space-y-7">
-              {messages.map(m =>
-                m.role === 'user' ? (
-                  <UserBubble key={m.id} message={m} />
-                ) : (
-                  <AssistantMessage
-                    key={m.id}
-                    message={m}
-                    speaker={speaker}
-                    onRun={openSandbox}
-                    onRegenerate={
-                      !streaming && m.id === lastAssistantId
-                        ? () => runStream({ regenerate: true })
-                        : undefined
-                    }
-                  />
-                ),
-              )}
-            </div>
-          )}
-          {/* streaming bubble */}
-          {streaming && (
-            <div className="mt-7 animate-fade-up">
-              {notices.map((n, i) => (
-                <p
-                  key={i}
-                  className="mb-3 rounded-xl border border-border/70 bg-accent/50 px-4 py-2.5 font-serif text-[0.85rem] italic leading-relaxed text-muted-foreground"
-                >
-                  {n}
+              </AnimatePresence>
+
+              {notice && (
+                <p className="flex items-start gap-2 font-serif text-reading-sm italic text-muted-foreground">
+                  <Lightbulb className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.7} />
+                  {notice}
                 </p>
-              ))}
-              {thinkingPhase && (
-                <div className="flex items-center gap-1.5 text-muted-foreground" aria-live="polite">
-                  <Dot delay="0ms" />
-                  <Dot delay="180ms" />
-                  <Dot delay="360ms" />
-                  <span className="ml-2 font-serif italic">BODHA is thinking…</span>
+              )}
+
+              {streaming && (
+                <div className="animate-fade-in">
+                  <Markdown content={streaming} />
+                  <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-[2px] animate-blink-caret rounded-sm bg-primary align-middle" />
                 </div>
               )}
-              {streamText && (
-                <div className="prose-bodha writing-caret">
-                  <Markdown content={streamText} onRun={openSandbox} />
+
+              {busy && !streaming && (
+                <p className="flex items-center gap-2 text-ui-sm text-muted-foreground">
+                  <span className="flex gap-1">
+                    {[0, 1, 2].map(i => (
+                      <span
+                        key={i}
+                        className="h-1.5 w-1.5 animate-pulse-soft rounded-full bg-primary/70"
+                        style={{ animationDelay: `${i * 180}ms` }}
+                      />
+                    ))}
+                  </span>
+                  BODHA is thinking…
+                </p>
+              )}
+
+              {error && (
+                <div className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/[0.06] px-3.5 py-2.5 text-ui text-destructive">
+                  <span className="flex-1">{error}</span>
+                  <button type="button" onClick={() => setError(null)} className="icon-btn-sm -my-1 -mr-1" aria-label="Dismiss">
+                    <X className="h-3.5 w-3.5" strokeWidth={2} />
+                  </button>
                 </div>
               )}
             </div>
-          )}
-          {error && (
-            <p role="alert" className="mt-6 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-              {error}
-            </p>
-          )}
-          <div ref={bottomRef} className="h-px" />
+          </div>
         </div>
-      </div>
-      {/* composer */}
-      <div className="border-t border-border/60 bg-background/90 px-4 pb-4 pt-3 backdrop-blur md:px-8">
-        <div className="mx-auto w-full max-w-3xl">
-          <Composer
-            input={input}
-            setInput={setInput}
-            onSend={send}
-            streaming={streaming}
-            onStop={() => abortRef.current?.abort()}
-            dictation={dictation}
-            onAttach={() => setDocPickerOpen(true)}
-            showAttach={!!chat}
-          />
-          <p className="mt-2 text-center text-[11px] text-muted-foreground/70">
-            BODHA is strictly educational · created by <span className="font-medium">Srijan Singh and Parv Mishra</span> · Enter ↵ sends, Shift+Enter adds a line
-          </p>
+
+        {/* ── Scroll affordance ──────────────────────────────────────────── */}
+        <AnimatePresence>
+          {!atBottom && (
+            <motion.button
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              onClick={() => {
+                setAtBottom(true)
+                scrollToBottom()
+              }}
+              className="absolute bottom-36 left-1/2 z-20 -translate-x-1/2 rounded-full border border-border/80 bg-surface/95 p-2 shadow-card backdrop-blur"
+              aria-label="Jump to the latest message"
+            >
+              <ArrowDown className="h-4 w-4 text-muted-foreground" strokeWidth={1.8} />
+            </motion.button>
+          )}
+        </AnimatePresence>
+
+        {/* ── Composer ───────────────────────────────────────────────────── */}
+        <div className="relative z-10 shrink-0 border-t border-border/60 bg-background/95 pb-safe backdrop-blur">
+          <div className="mx-auto w-full max-w-read px-3 py-3 md:px-6">
+            {/* Live Mode on phones: docked above the field */}
+            <AnimatePresence>
+              {liveOpen && !liveMinimized && (
+                <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }} className="mb-3 md:hidden">
+                  <LiveMode
+                    state={liveState}
+                    speaker={speaker}
+                    gaze={doc ? 'right' : 'center'}
+                    minimized={false}
+                    onMinimize={setLiveMinimized}
+                    onClose={() => setLiveOpen(false)}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <Composer
+              value={draft}
+              onChange={setDraft}
+              onSend={() => void send()}
+              onStop={stop}
+              busy={busy}
+              dictation={dictation}
+              onAttach={() => setPickerOpen(true)}
+              attachLabel={doc ? `Linked: ${doc.title}` : 'Link a document'}
+            />
+          </div>
         </div>
+
+        {/* Minimised live bubble — stays put so BODHA is always reachable */}
+        <AnimatePresence>
+          {liveOpen && liveMinimized && (
+            <div className="pointer-events-auto fixed bottom-28 right-3 z-30 md:bottom-6 md:right-6">
+              <LiveMode
+                state={liveState}
+                speaker={speaker}
+                gaze={doc ? 'right' : 'center'}
+                minimized
+                onMinimize={setLiveMinimized}
+                onClose={() => setLiveOpen(false)}
+              />
+            </div>
+          )}
+        </AnimatePresence>
       </div>
-      {/* overlays */}
-      {chat && (
-        <DocPicker
-          open={docPickerOpen}
-          onClose={() => setDocPickerOpen(false)}
-          onPick={async docId => {
-            setDocPickerOpen(false)
-            const res = await authFetch(`/api/chats/${chat.id}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ documentId: docId }),
-            })
-            if (res.ok) {
-              const docRes = await authFetch('/api/documents', { cache: 'no-store' })
-              const all = (await docRes.json()).documents as DocumentMeta[]
-              setDocChip(all.find(d => d.id === docId) ?? null)
-            }
-          }}
-        />
-      )}
-      <SandboxDrawer
-        code={sandboxCode}
-        onClose={() => setSandboxCode(null)}
-        onFull={() => {
-          setSandboxCode(null)
-          router.push('/sandbox')
+
+      {/* ── Desktop live rail ──────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {liveOpen && !liveMinimized && (
+          <motion.aside
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: 280, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 380, damping: 34 }}
+            className="hidden shrink-0 overflow-hidden border-l border-border/60 bg-surface/40 md:block"
+          >
+            <div className="w-[280px] p-3">
+              <LiveMode
+                state={liveState}
+                speaker={speaker}
+                gaze={doc ? 'right' : 'center'}
+                minimized={false}
+                onMinimize={setLiveMinimized}
+                onClose={() => setLiveOpen(false)}
+                caption={
+                  busy
+                    ? 'Thinking about your question…'
+                    : speaker.speaking
+                      ? 'Reading the answer aloud'
+                      : dictation.listening
+                        ? 'Listening to you — go ahead'
+                        : 'Ask me anything, or tap the mic'
+                }
+              />
+            </div>
+          </motion.aside>
+        )}
+      </AnimatePresence>
+
+      <DocPicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onPick={picked => {
+          setDoc(picked)
+          setPickerOpen(false)
         }}
+        onClear={() => {
+          setDoc(null)
+          setPickerOpen(false)
+        }}
+        selectedId={doc?.id}
       />
     </div>
   )
 }
 
-// ─── Message pieces ──────────────────────────────────────────────────────────
-function UserBubble({ message }: { message: Message }) {
+/* ─── Pieces ──────────────────────────────────────────────────────────────── */
+
+function UserMessage({ content }: { content: string }) {
   return (
-    <div className="animate-fade-up flex justify-end">
-      <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/15 px-4.5 py-2.5 text-[0.95rem] leading-relaxed text-foreground shadow-warm">
-        <p className="whitespace-pre-wrap break-words px-1 py-0.5 font-sans">{message.content}</p>
+    <div className="flex justify-end">
+      <div className="max-w-[88%] whitespace-pre-wrap rounded-[20px] rounded-br-md bg-card px-4 py-2.5 text-[15.5px] leading-relaxed text-foreground/90 shadow-soft md:max-w-[80%]">
+        {content}
       </div>
     </div>
   )
 }
 
 function AssistantMessage({
-  message,
-  speaker,
-  onRun,
+  content,
+  speaking,
+  onSpeak,
   onRegenerate,
+  showActions,
 }: {
-  message: Message
-  speaker: ReturnType<typeof useSpeaker>
-  onRun: (lang: RunnableLang, code: string) => void
+  content: string
+  speaking: boolean
+  onSpeak: () => void
   onRegenerate?: () => void
+  showActions: boolean
 }) {
   const [copied, setCopied] = useState(false)
+
   async function copy() {
     try {
-      await navigator.clipboard.writeText(message.content)
+      await navigator.clipboard.writeText(content)
       setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
+      setTimeout(() => setCopied(false), 1600)
     } catch {}
   }
-  return (
-    <div className="animate-fade-up group/msg">
-      <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70">
-        <span className="flex h-5 w-5 items-center justify-center rounded-md bg-primary text-[10px] text-primary-foreground">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-            <path d="M12 2c-3.5 3.6-5.5 7-5.5 10.2a5.5 5.5 0 0 0 11 0C17.5 9 15.5 5.6 12 2z" />
-          </svg>
-        </span>
-        BODHA
-      </div>
-      <Markdown content={message.content} onRun={onRun} />
-      <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover/msg:opacity-100">
-        <ActionBtn onClick={copy} label={copied ? 'Copied ✓' : 'Copy'} />
-        {speaker.supported && (
-          <ActionBtn
-            onClick={() => (speaker.speaking ? speaker.stop() : speaker.speak(message.content))}
-            label={speaker.speaking ? 'Stop' : 'Listen'}
-          />
-        )}
-        {onRegenerate && <ActionBtn onClick={onRegenerate} label="↻ Try again" />}
-      </div>
-    </div>
-  )
-}
 
-function ActionBtn({ onClick, label }: { onClick: () => void; label: string }) {
   return (
-    <button
-      onClick={onClick}
-      className="rounded-lg px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-primary"
-    >
-      {label}
-    </button>
-  )
-}
-
-function Dot({ delay }: { delay: string }) {
-  return (
-    <span
-      className="inline-block h-2 w-2 animate-pulse-soft rounded-full bg-primary"
-      style={{ animationDelay: delay }}
-    />
-  )
-}
-
-// ─── Composer ────────────────────────────────────────────────────────────────
-interface ComposerProps {
-  input: string
-  setInput: (v: string) => void
-  onSend: (text: string) => void
-  streaming: boolean
-  onStop: () => void
-  dictation: ReturnType<typeof useDictation>
-  onAttach: () => void
-  showAttach: boolean
-}
-
-function Composer({ input, setInput, onSend, streaming, onStop, dictation, onAttach, showAttach }: ComposerProps) {
-  const taRef = useRef<HTMLTextAreaElement>(null)
-  const canDictate = typeof window !== 'undefined' && speechSupported()
-  useEffect(() => {
-    const ta = taRef.current
-    if (!ta) return
-    ta.style.height = '0px'
-    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
-  }, [input])
-  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault()
-      if (input.trim() && !streaming) onSend(input)
-    }
-  }
-  return (
-    <div className="card-warm relative p-2.5 focus-within:border-primary/50">
-      {/* live dictation state */}
-      {dictation.listening && (
-        <div className="mx-2 mt-1 mb-1 flex items-center gap-2 rounded-lg bg-primary/10 px-3 py-1.5 text-xs text-primary">
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
-            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary" />
-          </span>
-          Listening…
-          {dictation.interim && <span className="italic text-muted-foreground">“{dictation.interim}”</span>}
-        </div>
-      )}
-      <textarea
-        ref={taRef}
-        value={input}
-        onChange={e => setInput(e.target.value)}
-        onKeyDown={onKeyDown}
-        rows={1}
-        placeholder={dictation.listening ? 'Speak now — I am listening…' : 'Ask anything you are learning…'}
-        className="w-full resize-none bg-transparent px-3 pb-1 pt-2 text-[0.95rem] text-foreground placeholder:text-muted-foreground/70"
-        aria-label="Your message"
-      />
-      <div className="mt-1 flex items-center gap-1.5 px-1">
-        {canDictate && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={dictation.toggle}
-            className={cn(
-              'h-9 w-9 rounded-full',
-              dictation.listening ? 'bg-primary text-primary-foreground hover:bg-primary' : 'text-muted-foreground hover:text-primary',
-            )}
-            title={dictation.listening ? 'Stop listening' : 'Speak your question'}
-            aria-label="Voice input"
+    <div className="group">
+      <Markdown content={content} />
+      {showActions && (
+        <div className="mt-2 flex items-center gap-0.5 opacity-60 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100 md:opacity-0">
+          <button type="button" onClick={copy} className="icon-btn-sm" title={copied ? 'Copied' : 'Copy answer'} aria-label="Copy answer">
+            {copied ? <Check className="h-3.5 w-3.5" strokeWidth={1.9} /> : <Copy className="h-3.5 w-3.5" strokeWidth={1.7} />}
+          </button>
+          <button
+            type="button"
+            onClick={onSpeak}
+            className={cn('icon-btn-sm', speaking && 'text-primary')}
+            title={speaking ? 'Stop reading' : 'Read this aloud'}
+            aria-label={speaking ? 'Stop reading' : 'Read this aloud'}
           >
-            <MicIcon />
-          </Button>
-        )}
-        {showAttach && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onAttach}
-            className="h-9 w-9 rounded-full text-muted-foreground hover:text-primary"
-            title="Discuss one of your library documents"
-            aria-label="Attach document"
-          >
-            <PaperclipIcon />
-          </Button>
-        )}
-        <div className="ml-auto flex items-center gap-2">
-          {streaming ? (
-            <Button variant="outline" size="sm" onClick={onStop} title="Stop generating">
-              ■ Stop
-            </Button>
-          ) : (
-            <Button
-              onClick={() => input.trim() && onSend(input)}
-              disabled={!input.trim()}
-              size="icon"
-              className="h-9 w-9"
-              aria-label="Send message"
-              title="Send (Enter)"
-            >
-              <ArrowUpIcon />
-            </Button>
+            {speaking ? <VolumeX className="h-3.5 w-3.5" strokeWidth={1.7} /> : <Volume2 className="h-3.5 w-3.5" strokeWidth={1.7} />}
+          </button>
+          {onRegenerate && (
+            <button type="button" onClick={onRegenerate} className="icon-btn-sm" title="Answer again" aria-label="Answer again">
+              <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.7} />
+            </button>
           )}
         </div>
-      </div>
-      {dictation.error && (
-        <p className="absolute -top-9 left-2 rounded-lg bg-foreground px-3 py-1.5 text-xs text-background shadow-warm">
-          {dictation.error === 'denied' && 'Microphone access was blocked — allow it in your browser settings.'}
-          {dictation.error === 'unsupported' && 'Voice input is not supported in this browser — try Chrome or Edge.'}
-          {dictation.error === 'network' && 'The speech service could not be reached.'}
-          {dictation.error === 'no-speech' && 'I could not hear anything — try again a bit louder.'}
-          {dictation.error === 'failed' && 'Voice input hit a snag — try again.'}
-        </p>
       )}
     </div>
   )
 }
-// small inline icons
-function MicIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z" />
-      <path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4" />
-    </svg>
-  )
-}
 
-function PaperclipIcon() {
+function EmptyState({
+  hasDocument,
+  docTitle,
+  onPick,
+}: {
+  hasDocument: boolean
+  docTitle?: string
+  onPick: (text: string) => void
+}) {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-    </svg>
-  )
-}
+    <div className="animate-fade-up pb-4 pt-6 text-center md:pt-12">
+      <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+        <svg viewBox="0 0 24 24" width="30" height="30" fill="none" aria-hidden>
+          <path d="M12 2.6c-2.6 2.9-4.1 5.4-4.1 7.7a4.1 4.1 0 0 0 8.2 0c0-2.3-1.5-4.8-4.1-7.7Z" fill="currentColor" />
+          <path d="M4.6 15.4c1.3 2.9 4.1 4.6 7.4 4.6s6.1-1.7 7.4-4.6c-2 .9-4.6 1.4-7.4 1.4s-5.4-.5-7.4-1.4Z" fill="currentColor" opacity=".8" />
+        </svg>
+      </div>
+      <h2 className="font-display text-[1.6rem] font-semibold tracking-[-0.02em] text-foreground">
+        Namaste, I am <span className="font-deva">बोध</span>
+      </h2>
+      <p className="mx-auto mt-2.5 max-w-[46ch] font-serif text-reading text-muted-foreground text-pretty">
+        {hasDocument && docTitle
+          ? `I have “${docTitle}” open. Ask me about any part of it, or we can start somewhere new.`
+          : 'Your patient tutor for anything you are studying. Ask a question, upload a book, or turn on Live Mode and simply talk.'}
+      </p>
 
-function ArrowUpIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M12 19V5M5 12l7-7 7 7" />
-    </svg>
+      <div className="mx-auto mt-7 grid max-w-[560px] gap-2 sm:grid-cols-2">
+        {SUGGESTIONS.map(({ icon: Icon, text }) => (
+          <button
+            key={text}
+            type="button"
+            onClick={() => onPick(text)}
+            className="group flex items-start gap-2.5 rounded-2xl border border-border/70 bg-surface px-3.5 py-3 text-left transition-colors hover:border-primary/40 hover:bg-surface"
+          >
+            <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary/80" strokeWidth={1.7} />
+            <span className="font-serif text-reading-sm text-foreground/80 group-hover:text-foreground">{text}</span>
+          </button>
+        ))}
+      </div>
+
+      <p className="mt-6 flex items-center justify-center gap-1.5 text-ui-sm text-muted-foreground/70">
+        <SquarePen className="h-3.5 w-3.5" strokeWidth={1.7} />
+        Everything is saved to your account — across devices.
+      </p>
+    </div>
   )
 }

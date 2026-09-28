@@ -2,51 +2,50 @@
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
-import { useAuth } from '@/components/AuthProvider'
 import AppShell from '@/components/AppShell'
 import ChatView from '@/components/ChatView'
+import { useAuth } from '@/components/AuthProvider'
 import { authFetch } from '@/lib/firebase/client-token'
 import type { Chat, DocumentMeta, Message } from '@/lib/types'
 
-/**
- * /chat/:id — an existing conversation, loaded from Firestore.
- */
+/** /chat/:id — one conversation, loaded from the store (Firestore in production). */
 export default function ChatPage() {
   const { id } = useParams<{ id: string }>()
   const { user } = useAuth()
-  const [chat, setChat] = useState<Chat | null>(null)
-  const [messages, setMessages] = useState<Message[]>([])
-  const [documentMeta, setDocumentMeta] = useState<DocumentMeta | null>(null)
-  const [status, setStatus] = useState<'loading' | 'ready' | 'missing'>('loading')
+  const [state, setState] = useState<{
+    status: 'loading' | 'ready' | 'missing'
+    chat: Chat | null
+    messages: Message[]
+    documentMeta: DocumentMeta | null
+  }>({ status: 'loading', chat: null, messages: [], documentMeta: null })
 
   useEffect(() => {
     if (!user || !id) return
     let cancelled = false
-    ;(async () => {
+
+    void (async () => {
       try {
         const res = await authFetch(`/api/chats/${id}`, { cache: 'no-store' })
         if (!res.ok) {
-          if (!cancelled) setStatus(res.status === 404 ? 'missing' : 'ready')
+          if (!cancelled) setState(s => ({ ...s, status: res.status === 404 ? 'missing' : 'ready' }))
           return
         }
         const data = await res.json()
         if (cancelled) return
-        setChat(data.chat)
-        setMessages(data.messages ?? [])
 
-        // resolve linked document metadata
+        let documentMeta: DocumentMeta | null = null
         if (data.chat?.documentId) {
           const docRes = await authFetch(`/api/documents/${data.chat.documentId}?meta=1`, { cache: 'no-store' })
-          if (docRes.ok && !cancelled) {
-            const docData = await docRes.json()
-            setDocumentMeta(docData.document ?? null)
-          }
+          if (docRes.ok) documentMeta = (await docRes.json()).document ?? null
         }
-        if (!cancelled) setStatus('ready')
+        if (cancelled) return
+
+        setState({ status: 'ready', chat: data.chat ?? null, messages: data.messages ?? [], documentMeta })
       } catch {
-        if (!cancelled) setStatus('ready')
+        if (!cancelled) setState(s => ({ ...s, status: 'ready' }))
       }
     })()
+
     return () => {
       cancelled = true
     }
@@ -56,26 +55,28 @@ export default function ChatPage() {
 
   return (
     <AppShell>
-      {status === 'loading' && (
-        <div className="flex min-h-dvh items-center justify-center">
+      {state.status === 'loading' && (
+        <div className="flex h-full items-center justify-center">
           <div className="text-center">
-            <div className="mx-auto mb-4 h-10 w-10 animate-pulse-soft rounded-xl bg-primary" />
-            <p className="font-serif text-sm italic text-muted-foreground">Opening the conversation…</p>
+            <div className="mx-auto mb-3.5 h-9 w-9 animate-pulse-soft rounded-xl bg-primary/80" />
+            <p className="font-serif text-reading-sm italic text-muted-foreground">Opening the conversation…</p>
           </div>
         </div>
       )}
-      {status === 'missing' && (
-        <div className="flex min-h-dvh items-center justify-center px-4">
-          <div className="text-center">
-            <p className="font-display text-xl font-semibold text-foreground">Conversation not found</p>
-            <p className="mt-2 font-serif text-sm italic text-muted-foreground">
-              It may have been deleted.
+
+      {state.status === 'missing' && (
+        <div className="flex h-full items-center justify-center px-6">
+          <div className="max-w-sm text-center">
+            <h1 className="font-display text-xl font-semibold text-foreground">Conversation not found</h1>
+            <p className="mt-2 font-serif text-reading-sm italic text-muted-foreground">
+              It may have been deleted. Start a new one from the sidebar and we will pick up where you left off.
             </p>
           </div>
         </div>
       )}
-      {status === 'ready' && (
-        <ChatView user={user} chat={chat} initialMessages={messages} documentMeta={documentMeta} />
+
+      {state.status === 'ready' && (
+        <ChatView chat={state.chat} initialMessages={state.messages} documentMeta={state.documentMeta} />
       )}
     </AppShell>
   )
