@@ -43,6 +43,7 @@ function toISO(v: unknown): string {
 type Fs = import('firebase-admin/firestore').Firestore
 type FsDocRef = import('firebase-admin/firestore').DocumentReference
 type FsDocData = import('firebase-admin/firestore').DocumentData
+type FsSnapDoc = import('firebase-admin/firestore').QueryDocumentSnapshot
 
 export class FirebaseStore implements Store {
   readonly mode = 'firebase' as const
@@ -177,7 +178,7 @@ export class FirebaseStore implements Store {
   async listChats(userId: string): Promise<Chat[]> {
     const admin = await this.admin()
     const snap = await this.dbChats(admin, userId).orderBy('updatedAt', 'desc').get()
-    return snap.docs.map(d => this.mapChat(d.id, d.data()))
+    return snap.docs.map((d: FsSnapDoc) => this.mapChat(d.id, d.data()))
   }
 
   async getChat(id: string, ownerId?: string): Promise<Chat | null> {
@@ -185,7 +186,7 @@ export class FirebaseStore implements Store {
     const admin = await this.admin()
     const doc = await this.chatRef(admin.db, ownerId, id).get()
     if (!doc.exists) return null
-    return this.mapChat(doc.id, doc.data())
+    return this.mapChat(doc.id, doc.data() ?? {})
   }
 
   async updateChat(id: string, patch: { title?: string; documentId?: string | null }, ownerId?: string): Promise<Chat | null> {
@@ -197,7 +198,7 @@ export class FirebaseStore implements Store {
     if (patch.documentId !== undefined) update.documentId = patch.documentId
     await ref.update(update)
     const doc = await ref.get()
-    return doc.exists ? this.mapChat(doc.id, doc.data()) : null
+    return doc.exists ? this.mapChat(doc.id, doc.data() ?? {}) : null
   }
 
   async deleteChat(id: string, ownerId?: string): Promise<void> {
@@ -207,7 +208,7 @@ export class FirebaseStore implements Store {
     // Delete the nested messages first (no recursive delete in the SDK).
     const messages = await ref.collection('messages').get()
     const batch = admin.db.batch()
-    messages.docs.forEach(m => batch.delete(m.ref))
+    messages.docs.forEach((m: FsSnapDoc) => batch.delete(m.ref))
     batch.delete(ref)
     await batch.commit()
   }
@@ -265,7 +266,7 @@ export class FirebaseStore implements Store {
       .collection('messages')
       .orderBy('createdAt', 'asc')
       .get()
-    return snap.docs.map(d => this.mapMessage(d.id, d.data()))
+    return snap.docs.map((d: FsSnapDoc) => this.mapMessage(d.id, d.data()))
   }
 
   async deleteMessage(id: string, ownerId?: string, chatId?: string): Promise<void> {
@@ -317,10 +318,17 @@ export class FirebaseStore implements Store {
         createdAt: new Date(),
       })
 
-    await admin.storage
-      .bucket()
-      .file(this.storagePath(doc.userId, doc.id))
-      .save(doc.content, { contentType: doc.mime })
+    // Raw bytes live in Firebase Storage; the extracted text is already in
+    // Firestore, so a Storage hiccup (bucket not created yet, quota) must not
+    // fail the whole upload.
+    try {
+      await admin.storage
+        .bucket()
+        .file(this.storagePath(doc.userId, doc.id))
+        .save(doc.content, { contentType: doc.mime })
+    } catch (err) {
+      console.warn('[store] Firebase Storage upload failed:', (err as Error).message)
+    }
 
     return { ...doc, createdAt: new Date().toISOString() }
   }
@@ -328,7 +336,7 @@ export class FirebaseStore implements Store {
   async listDocuments(userId: string): Promise<DocumentMeta[]> {
     const admin = await this.admin()
     const snap = await this.dbDocuments(admin, userId).orderBy('createdAt', 'desc').get()
-    return snap.docs.map(d => this.mapDocMeta(d.id, d.data()))
+    return snap.docs.map((d: FsSnapDoc) => this.mapDocMeta(d.id, d.data()))
   }
 
   async getDocument(id: string, ownerId?: string): Promise<DocumentRecord | null> {
@@ -339,7 +347,7 @@ export class FirebaseStore implements Store {
     const data = doc.data()!
     const meta = this.mapDocMeta(doc.id, data)
 
-    let content = Buffer.alloc(0)
+    let content: Buffer = Buffer.alloc(0)
     try {
       const [buf] = await admin.storage.bucket().file(this.storagePath(ownerId, id)).download()
       content = buf

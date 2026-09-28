@@ -1,51 +1,128 @@
-import { initializeApp, getApps, cert, App } from 'firebase-admin/app'
-import { getAuth, Auth } from 'firebase-admin/auth'
-import { getFirestore, Firestore } from 'firebase-admin/firestore'
-import { getStorage, Storage } from 'firebase-admin/storage'
+import type { App } from 'firebase-admin/app'
+import type { Auth } from 'firebase-admin/auth'
+import type { Firestore } from 'firebase-admin/firestore'
+import type { Storage } from 'firebase-admin/storage'
 
-let adminApp: App
-let adminAuth: Auth
-let adminDb: Firestore
-let adminStorage: Storage
+/**
+ * Firebase Admin SDK — server only.
+ *
+ * Two rules matter here, both learned the hard way:
+ *
+ *  1. NEVER initialise at import time. Next.js evaluates route modules while
+ *     collecting page data during `next build`, so a top-level `cert(...)` call
+ *     with credentials that are not present in that context aborts the build.
+ *     Initialisation is therefore lazy, inside `getAdmin()`, which only runs
+ *     while serving a real request.
+ *  2. `getAdmin()` returns `null` when the credentials are absent (the app then
+ *     uses the local file store) and only throws when credentials exist but the
+ *     SDK genuinely cannot start — that error text is meant to be read in the
+ *     Vercel logs.
+ */
 
-function initAdmin() {
-  if (getApps().length) {
-    adminApp = getApps()[0]
-  } else {
-    const projectId = process.env.FIREBASE_ADMIN_PROJECT_ID
-    const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL
-    const privateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY?.replace(/\\n/g, '\n')
-
-    if (!projectId || !clientEmail || !privateKey) {
-      throw new Error('Firebase Admin SDK credentials not configured. Set FIREBASE_ADMIN_PROJECT_ID, FIREBASE_ADMIN_CLIENT_EMAIL, and FIREBASE_ADMIN_PRIVATE_KEY.')
-    }
-
-    adminApp = initializeApp({
-      credential: cert({
-        projectId,
-        clientEmail,
-        privateKey,
-      }),
-      storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-    })
-  }
-
-  adminAuth = getAuth(adminApp)
-  adminDb = getFirestore(adminApp)
-  adminStorage = getStorage(adminApp)
+export interface AdminServices {
+  app: App
+  auth: Auth
+  db: Firestore
+  storage: Storage
 }
 
-if (typeof window === 'undefined') {
-  initAdmin()
+interface AdminCredentials {
+  projectId: string
+  clientEmail: string
+  privateKey: string
 }
 
-/** Check whether Firebase Admin SDK credentials are configured. */
+let cached: AdminServices | null = null
+let initFailure: Error | null = null
+
+/**
+ * Service-account keys are usually pasted into a dashboard as a single line,
+ * so newlines arrive as the two characters `\` `n`. Accept both that form and
+ * a real multi-line PEM, with or without wrapping quotes.
+ */
+function normalizePrivateKey(raw: string | undefined): string | null {
+  const value = raw?.trim()
+  if (!value) return null
+  return value
+    .replace(/^['"]|['"]$/g, '')
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .trim()
+}
+
+function readCredentials(): AdminCredentials | null {
+  const projectId = (process.env.FIREBASE_ADMIN_PROJECT_ID || process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || '').trim()
+  const clientEmail = (process.env.FIREBASE_ADMIN_CLIENT_EMAIL || '').trim()
+  const privateKey = normalizePrivateKey(process.env.FIREBASE_ADMIN_PRIVATE_KEY)
+
+  if (!projectId || !clientEmail || !privateKey) return null
+  return { projectId, clientEmail, privateKey }
+}
+
+/** Check whether Firebase Admin credentials are configured (never touches the SDK). */
 export function isFirebaseAdminConfigured(): boolean {
-  return !!(
-    process.env.FIREBASE_ADMIN_PROJECT_ID?.trim() &&
-    process.env.FIREBASE_ADMIN_CLIENT_EMAIL?.trim() &&
-    process.env.FIREBASE_ADMIN_PRIVATE_KEY?.trim()
-  )
+  return readCredentials() !== null
 }
 
-export { adminAuth, adminDb, adminStorage }
+/**
+ * The initialised Admin services, or `null` when Firebase is not configured.
+ * Safe to call at any time from server code.
+ */
+export async function getAdmin(): Promise<AdminServices | null> {
+  if (cached) return cached
+
+  const credentials = readCredentials()
+  if (!credentials) return null
+  if (initFailure) throw initFailure
+
+  try {
+    const [{ initializeApp, getApps, getApp, cert }, { getAuth }, { getFirestore }, { getStorage }] = await Promise.all([
+      import('firebase-admin/app'),
+      import('firebase-admin/auth'),
+      import('firebase-admin/firestore'),
+      import('firebase-admin/storage'),
+    ])
+
+    const storageBucket = (
+      process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ||
+      process.env.FIREBASE_STORAGE_BUCKET ||
+      `${credentials.projectId}.appspot.com`
+    ).trim()
+
+    const app = getApps().length
+      ? getApp()
+      : initializeApp({ credential: cert(credentials), storageBucket })
+
+    cached = { app, auth: getAuth(app), db: getFirestore(app), storage: getStorage(app) }
+    return cached
+  } catch (err) {
+    initFailure = new Error(
+      `Firebase Admin SDK could not initialise: ${(err as Error).message}. ` +
+        'Check FIREBASE_ADMIN_PROJECT_ID, FIREBASE_ADMIN_CLIENT_EMAIL and FIREBASE_ADMIN_PRIVATE_KEY ' +
+        '(the private key must be the full PEM, with newlines written as \\n).',
+    )
+    console.error('[firebase-admin]', initFailure.message)
+    throw initFailure
+  }
+}
+
+/**
+ * Like `getAdmin()` but throws when Firebase is not configured — used by the
+ * Firebase-backed store, which must never silently fall back to local files.
+ */
+export async function requireAdmin(): Promise<AdminServices> {
+  const admin = await getAdmin()
+  if (!admin) {
+    throw new Error(
+      'Firebase Admin credentials are not configured. Set FIREBASE_ADMIN_PROJECT_ID, ' +
+        'FIREBASE_ADMIN_CLIENT_EMAIL and FIREBASE_ADMIN_PRIVATE_KEY.',
+    )
+  }
+  return admin
+}
+
+/** Clears the cached SDK instance (hot reload / tests). */
+export function resetAdmin(): void {
+  cached = null
+  initFailure = null
+}

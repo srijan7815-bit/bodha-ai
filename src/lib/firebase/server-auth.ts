@@ -34,7 +34,11 @@ export async function getAuthUser(req: NextRequest): Promise<User | null> {
 /** Verifies a Firebase ID token with the Admin SDK; null when invalid/unconfigured. */
 async function verifyFirebaseToken(token: string): Promise<User | null> {
   const { getAdmin } = await import('@/lib/firebase/admin')
-  const admin = await getAdmin()
+  // Never let a broken Admin SDK turn an auth check into a 500: no admin, no user.
+  const admin = await getAdmin().catch(err => {
+    console.warn('[auth] Firebase Admin unavailable:', (err as Error).message)
+    return null
+  })
   if (!admin) return null
 
   try {

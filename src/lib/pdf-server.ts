@@ -24,7 +24,6 @@ export async function extractPdfText(buffer: Buffer): Promise<PdfExtract> {
     useWorkerFetch: false,
     isEvalSupported: false,
     useSystemFonts: true,
-    // @ts-expect-error Node needs this off in some environments
     disableFontFace: true,
   }).promise
 
