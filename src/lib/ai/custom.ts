@@ -146,6 +146,30 @@ function describeNetworkFailure(err: unknown, timeoutMs: number): string {
   return `That endpoint could not be used — ${message}`
 }
 
+/**
+ * Recognise a request that never reached the provider at all.
+ *
+ * Cloudflare and friends sit in front of a lot of API providers and refuse
+ * traffic from datacenter IPs — which every hosted app is. Their blocks look
+ * nothing like an API error, and telling a student "check your key" when the
+ * firewall is the problem sends them hunting for a bug that is not theirs.
+ */
+function describeFirewallBlock(res: Response, body: string): string | null {
+  const server = (res.headers.get('server') ?? '').toLowerCase()
+  const text = body.toLowerCase()
+  const looksLikeCloudflare =
+    server.includes('cloudflare') ||
+    res.headers.has('cf-ray') ||
+    text.includes('error code: 1010') ||
+    text.includes('attention required') ||
+    text.includes('just a moment') ||
+    text.includes('cf-error-details')
+  if (!looksLikeCloudflare) return null
+
+  const code = /error code:\s*(\d{3,4})/i.exec(body)?.[1]
+  return `The provider's firewall refused this request before it reached the API${code ? ` (error code ${code})` : ''}. This usually means the service blocks requests from datacenter servers — BODHA runs on one, so it cannot call this provider even though the same URL may work from your own computer. Saving it anyway is allowed: BODHA will keep trying, and fall back to its own models while it cannot connect.`
+}
+
 export interface ModelTestResult {
   id: string
   ok: boolean
@@ -189,10 +213,19 @@ export async function testModel(
   }
 
   if (!res.ok) {
-    const detail = await res.text().catch(() => '')
+    const detail = (await res.text().catch(() => '')).slice(0, 300)
     // Vendor errors are unrecognisable raw JSON; say what each one means.
     if (res.status === 401 || res.status === 403) {
-      return { id: model.id, ok: false, error: `The endpoint rejected the API key (HTTP ${res.status}). Check the key, and whether it may use ${model.id}.` }
+      // A 401/403 has two very different causes and they need different fixes,
+      // so look at who replied: a firewall in front of the provider answers in
+      // its own words, and blocks servers rather than keys.
+      const firewall = describeFirewallBlock(res, detail)
+      if (firewall) return { id: model.id, ok: false, error: firewall }
+      return {
+        id: model.id,
+        ok: false,
+        error: `The endpoint refused this request (HTTP ${res.status}).${detail ? ` It said: “${detail.slice(0, 160)}”.` : ''} Check the key, and whether it may use ${model.id}.`,
+      }
     }
     if (res.status === 404) {
       return { id: model.id, ok: false, error: `HTTP 404 — either the URL is wrong (it should be the part before /chat/completions, e.g. https://api.openai.com/v1) or the endpoint does not serve the model “${model.id}”.` }
@@ -249,6 +282,9 @@ export async function listEndpointModels(
 
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
+      const detail = (await res.text().catch(() => '')).slice(0, 300)
+      const firewall = describeFirewallBlock(res, detail)
+      if (firewall) return { ok: false, error: firewall }
       return { ok: false, error: `The endpoint would not list its models without a valid key (HTTP ${res.status}).` }
     }
     return { ok: false, error: `This endpoint does not list its models (HTTP ${res.status}). Type the model name instead — it is the exact string your provider documents.` }

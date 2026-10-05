@@ -466,7 +466,12 @@ export class FirebaseStore implements Store {
 
   async saveUserSettings(userId: string, settings: UserSettings): Promise<void> {
     const admin = await this.admin()
-    await this.settingsRef(admin, userId).set(settings, { merge: true })
+    // Firestore rejects `undefined` outright ("Cannot use undefined as a
+    // Firestore value") where every other store treats it as absent — and an
+    // optional field like verifiedAt is exactly that. Round-tripping through
+    // JSON drops undefined keys, which is the behaviour every caller means.
+    const clean = JSON.parse(JSON.stringify(settings)) as UserSettings
+    await this.settingsRef(admin, userId).set(clean, { merge: true })
   }
 
   async updateDocumentText(id: string, ownerId: string, text: string): Promise<void> {
