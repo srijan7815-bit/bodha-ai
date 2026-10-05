@@ -10,7 +10,8 @@ import type { TutorMessage } from '@/lib/types'
  */
 
 export interface ProviderConfig {
-  name: 'nvidia'
+  /** BODHA's own NIM route, or the student's OpenAI-compatible endpoint. */
+  name: 'nvidia' | 'custom'
   baseUrl: string
   apiKey: string
   model: string
@@ -19,6 +20,19 @@ export interface ProviderConfig {
   firstByteMs: number
   /** Provider-specific request tweaks (e.g. turn a model's thinking off). */
   extraBody?: Record<string, unknown>
+  /** How the entry is described to the student in a notice or the model toggle. */
+  label?: string
+}
+
+/**
+ * The identity used for benching and logging.
+ *
+ * A custom endpoint is keyed separately from BODHA's models: a student's own
+ * "gpt-4o-mini" must never inherit the health of a model we serve with the
+ * same name, in either direction.
+ */
+export function providerKey(cfg: ProviderConfig): string {
+  return cfg.name === 'custom' ? `custom:${cfg.model}` : cfg.model
 }
 
 export class ProviderUnreachableError extends Error {

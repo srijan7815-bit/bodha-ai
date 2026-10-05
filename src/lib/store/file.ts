@@ -11,6 +11,7 @@ import type {
   Session,
   Store,
   User,
+  UserSettings,
 } from '@/lib/types'
 
 const FILES = {
@@ -279,5 +280,18 @@ export class FileStore implements Store {
     if (idx === -1) return
     this.data.documents[idx].textContent = text
     this.scheduleSave()
+  }
+
+  // ─── Settings ───────────────────────────────────────────────────────────
+  // Kept in memory only: the file store is the zero-config demo mode, and a
+  // student's own API key should never be written to a plain JSON file on disk.
+  private settings = new Map<string, UserSettings>()
+
+  async getUserSettings(userId: string): Promise<UserSettings | null> {
+    return this.settings.get(userId) ?? null
+  }
+
+  async saveUserSettings(userId: string, settings: UserSettings): Promise<void> {
+    this.settings.set(userId, settings)
   }
 }

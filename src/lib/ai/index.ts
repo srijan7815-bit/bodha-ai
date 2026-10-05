@@ -1,6 +1,15 @@
 import type { DocumentRecord, Message, TutorMessage } from '@/lib/types'
 import { buildSystemMessages } from './prompt'
-import { completeOnce, getProviderChain, noteProviderResult, streamCompletion, ProviderUnreachableError, DEFAULT_MODEL } from './provider'
+import {
+  completeOnce,
+  getProviderChain,
+  noteProviderResult,
+  providerKey,
+  streamCompletion,
+  ProviderUnreachableError,
+  DEFAULT_MODEL,
+  type ProviderConfig,
+} from './provider'
 import { streamDemoReply } from './demo'
 
 /**
@@ -20,6 +29,12 @@ export type TutorChunk = { kind: 'delta'; text: string } | { kind: 'notice'; tex
 export interface TutorContext {
   history: Message[]
   document?: DocumentRecord | null
+  /**
+   * Extra entries to try BEFORE BODHA's own models — the student's own
+   * endpoint, when they have turned it on. If it fails we still answer, but we
+   * say which model did, so nobody wonders why their model sounded different.
+   */
+  preferred?: ProviderConfig[]
 }
 
 const PRETTY: Record<string, string> = {
@@ -30,7 +45,9 @@ const PRETTY: Record<string, string> = {
   'moonshotai/kimi-k3': 'Kimi K3',
 }
 
-function prettyName(model: string) {
+function prettyName(cfg: ProviderConfig | string) {
+  if (typeof cfg !== 'string' && cfg.label) return cfg.label
+  const model = typeof cfg === 'string' ? cfg : cfg.model
   return PRETTY[model] ?? model.split('/').pop() ?? model
 }
 
@@ -55,7 +72,12 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
   }
 
   const lastUser = [...recent].reverse().find(m => m.role === 'user')?.content ?? ''
-  const chain = getProviderChain()
+
+  // Their model first when they asked for it, then ours as a safety net: a
+  // student whose own endpoint is down should still get a lesson, not an error.
+  const own = getProviderChain()
+  const preferred = ctx.preferred ?? []
+  const chain = [...preferred, ...own.filter(bodha => !preferred.some(p => providerKey(p) === providerKey(bodha)))]
 
   if (!chain.length) {
     yield { kind: 'notice', text: 'No AI provider is configured, so I am answering from my offline study helper.' }
@@ -75,12 +97,12 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
         if (!produced) {
           produced = true
           sawContent = true
-          noteProviderResult(cfg.model, true)
-          const gaveWay = stalled.find(model => model !== cfg.model)
+          noteProviderResult(providerKey(cfg), true)
+          const gaveWay = stalled.find(name => name !== providerKey(cfg))
           if (gaveWay) {
             yield {
               kind: 'notice',
-              text: `${prettyName(gaveWay)} was not responding, so ${prettyName(cfg.model)} answered this one.`,
+              text: `${prettyName(gaveWay)} was not responding, so ${prettyName(cfg)} answered this one.`,
             }
           }
         }
@@ -96,12 +118,12 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
           const text = await completeOnce(cfg, messages, { signal, maxTokens: 2048, temperature: 0.6 })
           if (text) {
             sawContent = true
-            noteProviderResult(cfg.model, true)
-            const gaveWay = stalled.find(model => model !== cfg.model)
+            noteProviderResult(providerKey(cfg), true)
+            const gaveWay = stalled.find(name => name !== providerKey(cfg))
             if (gaveWay) {
               yield {
                 kind: 'notice',
-                text: `${prettyName(gaveWay)} was not responding, so ${prettyName(cfg.model)} answered this one.`,
+                text: `${prettyName(gaveWay)} was not responding, so ${prettyName(cfg)} answered this one.`,
               }
             }
             yield { kind: 'delta', text }
@@ -110,7 +132,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
         } catch (err) {
           console.warn(`[ai] ${cfg.model} non-streaming retry failed:`, (err as Error).message)
         }
-        stalled.push(cfg.model)
+        stalled.push(providerKey(cfg))
         continue
       }
       return
@@ -127,8 +149,10 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
       }
 
       // Nothing came back: bench this model for a while and try the next one.
-      stalled.push(cfg.model)
-      noteProviderResult(cfg.model, false)
+      // A student's own endpoint is never benched — only its own health matters
+      // to them, and they can see the result in the settings test.
+      stalled.push(providerKey(cfg))
+      if (cfg.name !== 'custom') noteProviderResult(providerKey(cfg), false)
       continue
     }
   }
@@ -136,7 +160,9 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
   if (!sawContent) {
     yield {
       kind: 'notice',
-      text: 'My teaching models are not reachable right now — I am answering from my offline study helper. Everything else keeps working.',
+      text: preferred.length
+        ? 'Neither your endpoint nor my own models are answering right now, so I am answering from my offline study helper.'
+        : 'My teaching models are not reachable right now — I am answering from my offline study helper. Everything else keeps working.',
     }
     for await (const chunk of streamDemoReply(lastUser, signal)) yield { kind: 'delta', text: chunk }
   }

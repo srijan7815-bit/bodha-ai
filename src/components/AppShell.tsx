@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
-import { BookOpen, Boxes, LogOut, Menu, MessageSquare, Moon, MoreHorizontal, Plus, Sun, Trash2, X } from 'lucide-react'
+import { BookOpen, Boxes, LogOut, Menu, MessageSquare, Moon, MoreHorizontal, Plus, Search, Settings, Sun, Trash2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/components/AuthProvider'
 import { BodhaMark, BodhaWordmark } from '@/components/Brand'
@@ -46,6 +46,7 @@ export default function AppShell({ children }: AppShellProps) {
   const [chats, setChats] = useState<Chat[] | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [dark, setDark] = useState(false)
+  const [query, setQuery] = useState('')
 
   useEffect(() => {
     setDark(document.documentElement.classList.contains('dark'))
@@ -96,12 +97,26 @@ export default function AppShell({ children }: AppShellProps) {
     router.push('/chat')
   }
 
+  // Case-insensitive title filter — the list is the only way back to an old
+  // conversation, and after a few weeks of study it gets long.
+  const visibleChats = (chats ?? []).filter(chat =>
+    chat.title.toLowerCase().includes(query.trim().toLowerCase()),
+  )
+
   const sidebar = (
     <div className="flex h-full flex-col bg-surface/60">
-      <div className="flex items-center justify-between px-4 pb-2 pt-4">
-        <Link href="/chat" className="inline-flex items-center gap-2" aria-label="BODHA home">
+      <div className="flex items-center justify-between gap-2 px-4 pb-2 pt-4">
+        <Link href="/chat" className="inline-flex min-w-0 items-center gap-2" aria-label="BODHA home">
           <BodhaMark size={30} />
           <BodhaWordmark size="md" />
+        </Link>
+        <Link
+          href="/settings"
+          className="icon-btn"
+          aria-label="Settings"
+          title="Settings"
+        >
+          <Settings className="h-4 w-4" strokeWidth={1.7} />
         </Link>
       </div>
 
@@ -135,8 +150,22 @@ export default function AppShell({ children }: AppShellProps) {
         })}
       </nav>
 
-      <div className="mt-3 flex items-center justify-between px-4 pb-1.5">
-        <span className="text-ui-xs font-medium uppercase tracking-[0.12em] text-muted-foreground/70">Recents</span>
+      <div className="mt-3 px-3 pb-1.5">
+        <label className="relative block">
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/60"
+            strokeWidth={1.8}
+            aria-hidden="true"
+          />
+          <span className="sr-only">Search conversations</span>
+          <input
+            type="search"
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            placeholder="Search conversations"
+            className="h-8 w-full rounded-lg border border-transparent bg-foreground/[0.04] pl-8 pr-2 text-ui text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus-visible:border-border focus-visible:bg-background"
+          />
+        </label>
       </div>
 
       <div className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto px-3 pb-4">
@@ -152,8 +181,11 @@ export default function AppShell({ children }: AppShellProps) {
             No conversations yet — ask your first question.
           </p>
         )}
+        {chats && chats.length > 0 && query.trim() && visibleChats.length === 0 && (
+          <p className="px-3 py-2 text-ui-sm text-muted-foreground">Nothing matches “{query.trim()}”.</p>
+        )}
         <ul className="space-y-0.5">
-          {chats?.map(chat => {
+          {visibleChats.map(chat => {
             const active = pathname === `/chat/${chat.id}`
             return (
               <li key={chat.id} className="group/item relative">
@@ -166,11 +198,14 @@ export default function AppShell({ children }: AppShellProps) {
                 >
                   {chat.title}
                 </Link>
+                {/* Always present, faint until you are on that row. Hover does
+                    not exist on a phone, so hiding it until hover made deleting
+                    a chat impossible on touch. */}
                 <button
                   type="button"
                   onClick={() => void removeChat(chat.id)}
                   aria-label={`Delete ${chat.title}`}
-                  className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive group-hover/item:block"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 rounded-md p-2 text-muted-foreground/45 opacity-100 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 md:opacity-0 md:group-hover/item:opacity-100"
                 >
                   <Trash2 className="h-3.5 w-3.5" strokeWidth={1.7} />
                 </button>
@@ -203,6 +238,13 @@ export default function AppShell({ children }: AppShellProps) {
               <span className="block truncate text-ui font-medium">{user?.email}</span>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={() => router.push('/settings')}
+              className="cursor-pointer"
+            >
+              <Settings className="mr-2 h-4 w-4" strokeWidth={1.7} />
+              Settings
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={toggleTheme} className="cursor-pointer">
               {dark ? <Sun className="mr-2 h-4 w-4" strokeWidth={1.7} /> : <Moon className="mr-2 h-4 w-4" strokeWidth={1.7} />}
               {dark ? 'Paper mode' : 'Night mode'}

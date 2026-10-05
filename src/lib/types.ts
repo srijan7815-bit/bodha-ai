@@ -99,6 +99,39 @@ export interface AIProviderConfig {
 }
 
 /** Store interface - implemented by FirebaseStore and the file-store fallback */
+/**
+ * A student's own OpenAI-compatible endpoint.
+ *
+ * Anything that speaks `POST {baseUrl}/chat/completions` works: OpenAI,
+ * OpenRouter, Together, Groq, a university gateway, or a model running on the
+ * student's own machine. The key is written through our API and read only on
+ * the server — it is never sent back to the browser.
+ */
+export interface CustomEndpoint {
+  /** Shown on the model toggle, e.g. "GPT-4o mini". */
+  label: string
+  baseUrl: string
+  model: string
+  apiKey: string
+}
+
+/** Which brain answers: BODHA's own models, or the student's endpoint. */
+export type ModelChoice = 'bodha' | 'custom'
+
+export interface UserSettings {
+  custom: CustomEndpoint | null
+  /** The toggle's position, kept across devices. */
+  preferredModel: ModelChoice
+  /** Named voice for read-aloud and Live Mode (null = BODHA's default). */
+  voice: string | null
+  updatedAt: string
+}
+
+/** What the browser is allowed to know: everything except the key. */
+export type PublicSettings = Omit<UserSettings, 'custom'> & {
+  custom: Omit<CustomEndpoint, 'apiKey'> | null
+}
+
 export interface Store {
   mode: 'firebase' | 'file'
   init(): Promise<void>
@@ -136,4 +169,28 @@ export interface Store {
   deleteDocument(id: string, ownerId?: string): Promise<void>
   /** Merge/replace a document's extracted text (OCR flow). */
   updateDocumentText(id: string, ownerId: string, text: string): Promise<void>
+
+  // Settings (per student: their own model endpoint, voice, preferences)
+  getUserSettings(userId: string): Promise<UserSettings | null>
+  saveUserSettings(userId: string, settings: UserSettings): Promise<void>
+}
+
+export const DEFAULT_SETTINGS: UserSettings = {
+  custom: null,
+  preferredModel: 'bodha',
+  voice: null,
+  updatedAt: '',
+}
+
+/** Strip the secret. Everything leaving the server for the client goes through here. */
+export function publicSettings(settings: UserSettings | null): PublicSettings {
+  const value = settings ?? DEFAULT_SETTINGS
+  return {
+    preferredModel: value.preferredModel,
+    voice: value.voice,
+    updatedAt: value.updatedAt,
+    custom: value.custom
+      ? { label: value.custom.label, baseUrl: value.custom.baseUrl, model: value.custom.model }
+      : null,
+  }
 }

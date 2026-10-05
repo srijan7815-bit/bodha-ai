@@ -28,7 +28,7 @@ export type ReadAloudProvider = 'fish' | 'magpie' | 'auto'
 export interface Speaker {
   speak: (
     text: string,
-    opts?: { onDone?: () => void; provider?: ReadAloudProvider },
+    opts?: { onDone?: () => void; provider?: ReadAloudProvider; voice?: string },
   ) => Promise<void>
   stop: () => void
   speaking: boolean
@@ -174,7 +174,7 @@ export function useSpeaker(): Speaker {
   )
 
   const speak = useCallback(
-    async (rawText: string, opts?: { onDone?: () => void; provider?: ReadAloudProvider }) => {
+    async (rawText: string, opts?: { onDone?: () => void; provider?: ReadAloudProvider; voice?: string }) => {
       const text = stripMarkdownForSpeech(rawText).slice(0, 1400)
       if (!text) return
       stop()
@@ -188,7 +188,7 @@ export function useSpeaker(): Speaker {
         const res = await fetch('/api/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, provider: opts?.provider ?? 'auto' }),
+          body: JSON.stringify({ text, provider: opts?.provider ?? 'auto', voice: opts?.voice }),
         })
         if (res.ok) {
           const bytes = await res.arrayBuffer()

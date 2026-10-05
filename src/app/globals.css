@@ -339,6 +339,25 @@
   .panel {
     @apply rounded-2xl border border-border/70 bg-surface;
   }
+  /* Solid action button. Used by the PDF reader and the sandbox; until now the
+     class did not exist, so those buttons rendered as bare text. */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full bg-primary font-medium text-primary-foreground shadow-soft transition-opacity hover:opacity-90 disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full border border-border/80 bg-surface font-medium text-foreground transition-colors hover:border-primary/40 disabled:pointer-events-none disabled:opacity-50;
+  }
+}
+
+/* A warm focus ring, on the keyboard path only — pointer users never see it. */
+@layer utilities {
+  .focus-warm {
+    outline: none;
+  }
+  .focus-warm:focus-visible {
+    outline: 2px solid rgb(var(--ring) / 0.55);
+    outline-offset: 1px;
+  }
 }
 
 /* ─── PDF reader (page-flip) ─────────────────────────────────────────────── */

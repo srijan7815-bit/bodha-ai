@@ -60,6 +60,10 @@ const config: Config = {
         serif: ['var(--font-serif)', 'Iowan Old Style', 'Georgia', 'serif'],
         // Devanagari wordmark — Tiro Devanagari Hindi
         deva: ['var(--font-devanagari)', 'Nirmala UI', 'Noto Sans Devanagari', 'sans-serif'],
+        // Headings — the reading serif. `font-display` was used across the app
+        // long before it existed here, so page titles and empty-state headings
+        // were quietly rendering in the UI sans instead.
+        display: ['var(--font-serif)', 'Iowan Old Style', 'Georgia', 'serif'],
         mono: ['var(--font-mono)', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
 

@@ -8,6 +8,7 @@ import type {
   Session,
   Store,
   User,
+  UserSettings,
 } from '@/lib/types'
 import type { AdminServices } from '@/lib/firebase/admin'
 import { firebaseAuthReady } from '@/lib/firebase/admin'
@@ -444,6 +445,26 @@ export class FirebaseStore implements Store {
     await admin.db.recursiveDelete(ref).catch(async () => {
       await ref.delete().catch(() => {})
     })
+  }
+
+  // ─── Settings: users/{uid}/settings/ai ────────────────────────────────────
+  // A student's own endpoint and API key. Deliberately its own document rather
+  // than a field on the profile: nothing but the server ever reads this path,
+  // so the key cannot leak into a client-side Firestore read.
+  private settingsRef(admin: AdminServices, userId: string): FsDocRef {
+    return admin.db.doc(`users/${userId}/settings/ai`)
+  }
+
+  async getUserSettings(userId: string): Promise<UserSettings | null> {
+    const admin = await this.admin()
+    const snap = await this.settingsRef(admin, userId).get()
+    if (!snap.exists) return null
+    return snap.data() as UserSettings
+  }
+
+  async saveUserSettings(userId: string, settings: UserSettings): Promise<void> {
+    const admin = await this.admin()
+    await this.settingsRef(admin, userId).set(settings, { merge: true })
   }
 
   async updateDocumentText(id: string, ownerId: string, text: string): Promise<void> {

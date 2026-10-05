@@ -1,19 +1,23 @@
 'use client'
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowDown, BookOpen, Check, Copy, FileText, GraduationCap, Lightbulb, RefreshCw, Sigma, Sparkles, SquarePen, Volume2, VolumeX, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { authFetch } from '@/lib/firebase/client-token'
 import { useSpeaker, useDictation } from '@/lib/voice'
-import Markdown from '@/components/Markdown'
+import Markdown, { type RunnableLang } from '@/components/Markdown'
 import Composer from '@/components/Composer'
 import LiveMode from '@/components/LiveMode'
+import SandboxDrawer from '@/components/SandboxDrawer'
+import ModelToggle from '@/components/ModelToggle'
+import { useSettings } from '@/lib/settings-client'
 import { resumeOrbAudio } from '@/lib/orbAudio'
 import DocPicker from '@/components/DocPicker'
 import { announceChatsChanged } from '@/components/AppShell'
-import type { Chat, DocumentMeta, Message } from '@/lib/types'
+import type { Chat, DocumentMeta, Message, ModelChoice } from '@/lib/types'
 
 interface ChatViewProps {
   chat: Chat | null
@@ -55,8 +59,22 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   const [readingId, setReadingId] = useState<string | null>(null)
   const [atBottom, setAtBottom] = useState(true)
 
+  const [runCode, setRunCode] = useState<{ lang: RunnableLang; code: string } | null>(null)
+
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+
+  const router = useRouter()
+  const { settings, connected, savePreferences } = useSettings()
+
+  // Which brain answers. 'custom' only wins when an endpoint is actually
+  // connected, so a stale preference can never point the toggle at nothing.
+  const model: ModelChoice = connected && settings.preferredModel === 'custom' ? 'custom' : 'bodha'
+
+  // The chosen voice is read through a ref inside callbacks so switching it in
+  // Settings does not rebuild the streaming loop.
+  const voiceRef = useRef<string | undefined>(undefined)
+  voiceRef.current = settings.voice ?? undefined
 
   const speaker = useSpeaker()
 
@@ -148,7 +166,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
 
   // ─── Streaming ────────────────────────────────────────────────────────────
   const runStream = useCallback(
-    async (targetChatId: string, body: { content?: string; regenerate?: boolean }, optimistic?: Message) => {
+    async (targetChatId: string, body: { content?: string; regenerate?: boolean; model?: ModelChoice }, optimistic?: Message) => {
       setBusy(true)
       setError(null)
       setNotice(null)
@@ -162,7 +180,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         const res = await authFetch(`/api/chats/${targetChatId}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ ...body, model }),
           signal: controller.signal,
         })
 
@@ -230,7 +248,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         announceChatsChanged()
       }
     },
-    [],
+    [model],
   )
 
   const send = useCallback(async () => {
@@ -318,7 +336,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
       const res = await authFetch(`/api/chats/${targetId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: clean }),
+        body: JSON.stringify({ content: clean, model }),
         signal,
       })
       if (!res.ok || !res.body) throw new Error('The connection dropped mid-answer.')
@@ -408,7 +426,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
       }
       setReadingId(message.id)
       void speaker
-        .speak(message.content, { provider: 'fish' })
+        .speak(message.content, { provider: 'fish', voice: voiceRef.current })
         .finally(() => setReadingId(current => (current === message.id ? null : current)))
     },
     [readingId, speaker],
@@ -432,6 +450,15 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
               <FileText className="h-3.5 w-3.5 shrink-0" strokeWidth={1.7} />
               <span className="truncate">{doc.title}</span>
             </Link>
+          )}
+
+          {connected && settings.custom && (
+            <ModelToggle
+              label={settings.custom.label}
+              value={model}
+              onChange={choice => void savePreferences({ preferredModel: choice })}
+              busy={busy}
+            />
           )}
 
           <button
@@ -476,6 +503,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
                     ) : (
                       <AssistantMessage
                         content={message.content}
+                        onRun={(lang, code) => setRunCode({ lang, code })}
                         speaking={readingId === message.id && speaker.speaking}
                         onSpeak={() => speak(message)}
                         onRegenerate={message.id === lastAssistantId && !busy ? regenerate : undefined}
@@ -495,7 +523,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
 
               {streaming && (
                 <div className="animate-fade-in">
-                  <Markdown content={streaming} />
+                  <Markdown content={streaming} onRun={(lang, code) => setRunCode({ lang, code })} />
                   <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-[2px] animate-blink-caret rounded-sm bg-primary align-middle" />
                 </div>
               )}
@@ -563,12 +591,23 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         </div>
       </div>
 
+      {/* ── Code from an answer, runnable without leaving the chat ──────── */}
+      <SandboxDrawer
+        code={runCode}
+        onClose={() => setRunCode(null)}
+        onFull={() => {
+          setRunCode(null)
+          router.push('/sandbox')
+        }}
+      />
+
       {/* ── Live Mode — a voice room of its own, not read-aloud ─────────── */}
       <LiveMode
         open={liveOpen}
         onClose={() => setLiveOpen(false)}
         ask={askLive}
         provider="magpie"
+        voice={settings.voice ?? undefined}
         language="en-US"
       />
 
@@ -607,12 +646,14 @@ function AssistantMessage({
   onSpeak,
   onRegenerate,
   showActions,
+  onRun,
 }: {
   content: string
   speaking: boolean
   onSpeak: () => void
   onRegenerate?: () => void
-  showActions: boolean
+  showActions?: boolean
+  onRun?: (lang: RunnableLang, code: string) => void
 }) {
   const [copied, setCopied] = useState(false)
 
@@ -626,8 +667,8 @@ function AssistantMessage({
 
   return (
     <div className="group">
-      <Markdown content={content} />
-      {showActions && (
+      <Markdown content={content} onRun={onRun} />
+      {showActions !== false && (
         <div className="mt-2 flex items-center gap-0.5 opacity-60 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100 md:opacity-0">
           <button type="button" onClick={copy} className="icon-btn-sm" title={copied ? 'Copied' : 'Copy answer'} aria-label="Copy answer">
             {copied ? <Check className="h-3.5 w-3.5" strokeWidth={1.9} /> : <Copy className="h-3.5 w-3.5" strokeWidth={1.7} />}
