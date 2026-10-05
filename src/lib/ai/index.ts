@@ -86,7 +86,10 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
   }
 
   let sawContent = false
-  const stalled: string[] = []
+  // Models that had to give way, remembered by their identity *and* by the name
+  // the student knows them by — a custom endpoint should be named in the notice
+  // the way they named it, not by its internal key.
+  const stalled: Array<{ key: string; label: string }> = []
 
   for (let i = 0; i < chain.length; i++) {
     const cfg = chain[i]
@@ -98,11 +101,11 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
           produced = true
           sawContent = true
           noteProviderResult(providerKey(cfg), true)
-          const gaveWay = stalled.find(name => name !== providerKey(cfg))
+          const gaveWay = stalled.find(entry => entry.key !== providerKey(cfg))
           if (gaveWay) {
             yield {
               kind: 'notice',
-              text: `${prettyName(gaveWay)} was not responding, so ${prettyName(cfg)} answered this one.`,
+              text: `${gaveWay.label} was not responding, so ${prettyName(cfg)} answered this one.`,
             }
           }
         }
@@ -119,11 +122,11 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
           if (text) {
             sawContent = true
             noteProviderResult(providerKey(cfg), true)
-            const gaveWay = stalled.find(name => name !== providerKey(cfg))
+            const gaveWay = stalled.find(entry => entry.key !== providerKey(cfg))
             if (gaveWay) {
               yield {
                 kind: 'notice',
-                text: `${prettyName(gaveWay)} was not responding, so ${prettyName(cfg)} answered this one.`,
+                text: `${gaveWay.label} was not responding, so ${prettyName(cfg)} answered this one.`,
               }
             }
             yield { kind: 'delta', text }
@@ -132,7 +135,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
         } catch (err) {
           console.warn(`[ai] ${cfg.model} non-streaming retry failed:`, (err as Error).message)
         }
-        stalled.push(providerKey(cfg))
+        stalled.push({ key: providerKey(cfg), label: prettyName(cfg) })
         continue
       }
       return
@@ -151,7 +154,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
       // Nothing came back: bench this model for a while and try the next one.
       // A student's own endpoint is never benched — only its own health matters
       // to them, and they can see the result in the settings test.
-      stalled.push(providerKey(cfg))
+      stalled.push({ key: providerKey(cfg), label: prettyName(cfg) })
       if (cfg.name !== 'custom') noteProviderResult(providerKey(cfg), false)
       continue
     }

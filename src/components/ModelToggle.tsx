@@ -2,7 +2,6 @@
 
 import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
-import type { ModelChoice } from '@/lib/types'
 
 /**
  * The model switch — and it only exists when it has something to say.
@@ -11,31 +10,31 @@ import type { ModelChoice } from '@/lib/types'
  * endpoint, and nowhere else: with one brain there is nothing to switch, and a
  * control that does nothing is just noise in a reading-first interface.
  *
- * Both segments are named after what they are — बोध, and the student's own
- * label — because "Model A / Model B" tells nobody anything.
+ * An endpoint can carry several models, so the switch scrolls sideways rather
+ * than growing without limit — on a phone it stays one row tall and the chat
+ * title keeps its room.
  */
+export interface ToggleOption {
+  id: string
+  label: string
+}
+
 export default function ModelToggle({
-  label,
+  options,
   value,
   onChange,
   busy,
 }: {
-  /** The student's name for their own model. */
-  label: string
-  value: ModelChoice
-  onChange: (next: ModelChoice) => void
+  options: ToggleOption[]
+  value: string
+  onChange: (next: string) => void
   busy?: boolean
 }) {
-  const options: Array<{ id: ModelChoice; text: string; title: string }> = [
-    { id: 'bodha', text: 'बोध', title: 'BODHA’s own teaching models' },
-    { id: 'custom', text: label, title: `Your model — ${label}` },
-  ]
-
   return (
     <div
       role="radiogroup"
       aria-label="Which model answers"
-      className="relative flex h-8 shrink-0 items-center rounded-full border border-border/70 bg-surface p-0.5"
+      className="scrollbar-quiet flex h-8 max-w-[45vw] shrink-0 snap-x items-center gap-0.5 overflow-x-auto rounded-full border border-border/70 bg-surface p-0.5 sm:max-w-[320px]"
     >
       {options.map(option => {
         const active = value === option.id
@@ -46,12 +45,12 @@ export default function ModelToggle({
             role="radio"
             aria-checked={active}
             disabled={busy}
-            title={option.title}
+            title={option.label}
             onClick={() => {
               if (!active) onChange(option.id)
             }}
             className={cn(
-              'relative h-7 max-w-[68px] rounded-full px-2.5 text-ui-sm transition-colors disabled:opacity-60 sm:max-w-[104px]',
+              'relative h-7 shrink-0 snap-start rounded-full px-2.5 text-ui-sm transition-colors disabled:opacity-60',
               active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
             )}
           >
@@ -62,7 +61,7 @@ export default function ModelToggle({
                 transition={{ type: 'spring', stiffness: 480, damping: 40 }}
               />
             )}
-            <span className="relative block truncate">{option.text}</span>
+            <span className="relative block max-w-[104px] truncate">{option.label}</span>
           </button>
         )
       })}

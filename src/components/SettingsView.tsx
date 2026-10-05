@@ -12,13 +12,17 @@ import {
   Mic,
   Moon,
   Plug,
+  Plus,
+  RefreshCw,
   Sun,
   Trash2,
   Volume2,
+  X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/components/AuthProvider'
 import { useSettings } from '@/lib/settings-client'
+import type { CustomModel } from '@/lib/types'
 
 /**
  * Settings — one page, three quiet sections.
@@ -40,15 +44,18 @@ const VOICES = [
 
 export default function SettingsView() {
   const { user } = useAuth()
-  const { settings, connected, savePreferences, connectEndpoint, disconnectEndpoint } = useSettings()
+  const { settings, connected, savePreferences, connectEndpoint, disconnectEndpoint, fetchModels } = useSettings()
 
   const [baseUrl, setBaseUrl] = useState('')
-  const [model, setModel] = useState('')
-  const [label, setLabel] = useState('')
   const [apiKey, setApiKey] = useState('')
+  const [models, setModels] = useState<CustomModel[]>([{ id: '', label: '' }])
   const [showKey, setShowKey] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+  const [listing, setListing] = useState(false)
+  const [canSaveAnyway, setCanSaveAnyway] = useState(false)
+  const [result, setResult] = useState<{ kind: 'ok' | 'warn' | 'error'; text: string } | null>(null)
+  /** Per-model outcome of the last test, keyed by model id. */
+  const [marks, setMarks] = useState<Record<string, { ok: boolean; note: string }>>({})
   const [dark, setDark] = useState(false)
 
   useEffect(() => {
@@ -60,27 +67,84 @@ export default function SettingsView() {
   useEffect(() => {
     if (!settings.custom) return
     setBaseUrl(settings.custom.baseUrl)
-    setModel(settings.custom.model)
-    setLabel(settings.custom.label)
+    setModels(settings.custom.models.length ? settings.custom.models : [{ id: '', label: '' }])
   }, [settings.custom])
+
+  /** Rows are edited as plain strings until saved; blanks are dropped on the way. */
+  function updateModel(index: number, patch: Partial<CustomModel>) {
+    setModels(prev => prev.map((model, i) => (i === index ? { ...model, ...patch } : model)))
+  }
+
+  function addModelRow() {
+    setModels(prev => [...prev, { id: '', label: '' }])
+  }
+
+  function removeModelRow(index: number) {
+    setModels(prev => (prev.length === 1 ? [{ id: '', label: '' }] : prev.filter((_, i) => i !== index)))
+  }
+
+  /** Pull the provider's own list, when it publishes one. */
+  async function loadModelList() {
+    setListing(true)
+    setResult(null)
+    const res = await fetchModels({ baseUrl, apiKey })
+    setListing(false)
+    if (!res.ok) {
+      setResult({ kind: 'error', text: res.error })
+      return
+    }
+    setModels(res.models)
+    setResult({ kind: 'ok', text: `Found ${res.models.length} models on this endpoint — remove any you do not want.` })
+  }
+
+  async function submitEndpoint(skipTest: boolean) {
+    setBusy(true)
+    setResult(null)
+    const cleaned = models
+      .map(model => ({ id: model.id.trim(), label: model.label.trim() }))
+      .filter(model => model.id)
+    const res = await connectEndpoint({ baseUrl, apiKey, models: cleaned, skipTest })
+    setBusy(false)
+
+    if (res.ok) {
+      setApiKey('')
+      const marks: Record<string, { ok: boolean; note: string }> = {}
+      for (const r of res.results ?? []) {
+        marks[r.id] = { ok: r.ok, note: r.ok ? `answered: “${r.sample}”` : (r.error ?? 'did not answer') }
+      }
+      setMarks(marks)
+      if (res.status === 'untested') {
+        setResult({ kind: 'warn', text: res.warning ?? 'Saved without a successful test.' })
+      } else {
+        setResult({
+          kind: 'ok',
+          text: res.sample ? `Connected. Your model answered: “${res.sample}”` : 'Connected and tested.',
+        })
+      }
+      return
+    }
+
+    const marks: Record<string, { ok: boolean; note: string }> = {}
+    for (const r of res.results ?? []) {
+      marks[r.id] = { ok: r.ok, note: r.ok ? `answered: “${r.sample}”` : (r.error ?? 'did not answer') }
+    }
+    setMarks(marks)
+    setResult({
+      kind: 'error',
+      text: res.error ?? 'That endpoint could not be saved.',
+    })
+    setCanSaveAnyway(Boolean(res.canSaveAnyway))
+  }
 
   async function saveEndpoint(event: React.FormEvent) {
     event.preventDefault()
-    setBusy(true)
-    setResult(null)
-    const res = await connectEndpoint({ baseUrl, model, label, apiKey })
-    setBusy(false)
-    if (res.ok) {
-      setApiKey('')
-      setResult({
-        kind: 'ok',
-        text: res.sample
-          ? `Connected. Your model answered: “${res.sample}”`
-          : 'Connected. Your model answered.',
-      })
-    } else {
-      setResult({ kind: 'error', text: res.error })
-    }
+    setCanSaveAnyway(false)
+    await submitEndpoint(false)
+  }
+
+  async function saveAnyway() {
+    setCanSaveAnyway(false)
+    await submitEndpoint(true)
   }
 
   async function removeEndpoint() {
@@ -90,8 +154,8 @@ export default function SettingsView() {
     if (res.ok) {
       setApiKey('')
       setBaseUrl('')
-      setModel('')
-      setLabel('')
+      setModels([{ id: '', label: '' }])
+      setMarks({})
       setResult({ kind: 'ok', text: 'Endpoint removed. BODHA will answer with its own models.' })
     } else {
       setResult({ kind: 'error', text: res.error ?? 'Could not remove that.' })
@@ -122,11 +186,23 @@ export default function SettingsView() {
           hint="Connect any OpenAI-compatible endpoint — OpenAI, OpenRouter, Together, Groq, or a model running on your own machine. It then appears as a switch in the chat."
         >
           {connected && settings.custom && (
-            <div className="mb-4 flex items-center gap-2 rounded-xl border border-primary/25 bg-primary/[0.06] px-3 py-2.5">
-              <Check className="h-4 w-4 shrink-0 text-primary" strokeWidth={2} />
+            <div className="mb-4 flex items-start gap-2 rounded-xl border border-primary/25 bg-primary/[0.06] px-3 py-2.5">
+              {settings.custom.verified ? (
+                <Check className="mt-0.5 h-4 w-4 shrink-0 text-primary" strokeWidth={2} />
+              ) : (
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" strokeWidth={2} />
+              )}
               <span className="min-w-0 flex-1 text-ui text-foreground/90">
-                <span className="font-medium">{settings.custom.label}</span>
-                <span className="text-muted-foreground"> · {settings.custom.model}</span>
+                <span className="font-medium">
+                  {settings.custom.models.length} model{settings.custom.models.length === 1 ? '' : 's'} on{' '}
+                  {settings.custom.baseUrl.replace(/^https?:\/\//, '')}
+                </span>
+                {!settings.custom.verified && (
+                  <span className="block text-ui-sm text-amber-700 dark:text-amber-400">
+                    Not verified — BODHA could not reach this endpoint when it was saved. It is still tried on
+                    every question, and falls back to BODHA’s models if it stays silent.
+                  </span>
+                )}
               </span>
               <button
                 type="button"
@@ -175,21 +251,82 @@ export default function SettingsView() {
                 </button>
               }
             />
-            <div className="grid gap-3.5 sm:grid-cols-2">
-              <Field
-                label="Model name"
-                hint="Exactly as the provider spells it."
-                value={model}
-                onChange={setModel}
-                placeholder="gpt-4o-mini"
-              />
-              <Field
-                label="Name on the switch"
-                hint="Optional."
-                value={label}
-                onChange={setLabel}
-                placeholder="My model"
-              />
+            {/* ── The models on this endpoint ── */}
+            <div className="rounded-xl border border-border/70 bg-background/60 p-3">
+              <div className="mb-2.5 flex items-center justify-between gap-2">
+                <span className="text-ui-sm font-medium text-foreground/90">
+                  Models on this endpoint
+                  <span className="ml-1.5 font-normal text-muted-foreground">
+                    — the switch in the chat will offer all of them
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void loadModelList()}
+                  disabled={listing || !baseUrl.trim()}
+                  className="chip disabled:opacity-50"
+                  title="Ask the endpoint which models it serves"
+                >
+                  {listing ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
+                  ) : (
+                    <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.8} />
+                  )}
+                  Fetch list
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {models.map((entry, index) => {
+                  const mark = marks[entry.id.trim()]
+                  return (
+                    <div key={index} className="flex items-start gap-2">
+                      <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[1fr_1.2fr]">
+                        <input
+                          value={entry.label}
+                          onChange={event => updateModel(index, { label: event.target.value })}
+                          placeholder="Name — e.g. Fast, or Smart"
+                          spellCheck={false}
+                          className="h-9 w-full rounded-lg border border-border/80 bg-background px-2.5 text-ui text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus-visible:border-primary/50"
+                        />
+                        <input
+                          value={entry.id}
+                          onChange={event => updateModel(index, { id: event.target.value })}
+                          placeholder="Model id — e.g. gpt-4o-mini"
+                          spellCheck={false}
+                          autoComplete="off"
+                          className="h-9 w-full rounded-lg border border-border/80 bg-background px-2.5 font-mono text-[12.5px] text-foreground outline-none transition-colors placeholder:font-sans placeholder:text-muted-foreground/60 focus-visible:border-primary/50"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeModelRow(index)}
+                        className="icon-btn-sm mt-1"
+                        aria-label={`Remove model ${index + 1}`}
+                        title="Remove"
+                      >
+                        <X className="h-3.5 w-3.5" strokeWidth={1.8} />
+                      </button>
+                      {mark && (
+                        <span
+                          className={cn(
+                            'mt-2 shrink-0 text-ui-sm',
+                            mark.ok ? 'text-primary' : 'text-amber-700 dark:text-amber-400',
+                          )}
+                          title={mark.note}
+                        >
+                          {mark.ok ? '✓' : '!'}
+                        </span>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              <button type="button" onClick={addModelRow} className="chip mt-2.5">
+                <Plus className="h-3.5 w-3.5" strokeWidth={1.9} />
+                Add another model
+              </button>
             </div>
 
             <div className="flex flex-wrap items-center gap-3 pt-1">
@@ -208,13 +345,15 @@ export default function SettingsView() {
           </form>
 
           {result && (
-            <p
+            <div
               role="status"
               className={cn(
                 'mt-3 flex items-start gap-2 rounded-xl border px-3 py-2.5 text-ui-sm',
                 result.kind === 'ok'
                   ? 'border-primary/25 bg-primary/[0.06] text-foreground/90'
-                  : 'border-destructive/30 bg-destructive/[0.06] text-destructive',
+                  : result.kind === 'warn'
+                    ? 'border-amber-500/30 bg-amber-500/[0.07] text-amber-800 dark:text-amber-300'
+                    : 'border-destructive/30 bg-destructive/[0.06] text-destructive',
               )}
             >
               {result.kind === 'ok' ? (
@@ -222,8 +361,26 @@ export default function SettingsView() {
               ) : (
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={2} />
               )}
-              {result.text}
-            </p>
+              <span className="min-w-0 flex-1">
+                {result.text}
+                {canSaveAnyway && (
+                  <span className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void saveAnyway()}
+                      disabled={busy}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border/80 bg-surface px-3 text-ui-sm font-medium text-foreground transition-colors hover:border-primary/40 disabled:opacity-60"
+                    >
+                      Save anyway
+                    </button>
+                    <span className="text-ui-sm text-muted-foreground">
+                      The details are kept and tried on every question — useful when a provider is down, or
+                      refuses requests from servers.
+                    </span>
+                  </span>
+                )}
+              </span>
+            </div>
           )}
         </Section>
 

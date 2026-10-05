@@ -13,11 +13,11 @@ import Composer from '@/components/Composer'
 import LiveMode from '@/components/LiveMode'
 import SandboxDrawer from '@/components/SandboxDrawer'
 import ModelToggle from '@/components/ModelToggle'
-import { useSettings } from '@/lib/settings-client'
+import { activeModel, toggleOptions, useSettings } from '@/lib/settings-client'
 import { resumeOrbAudio } from '@/lib/orbAudio'
 import DocPicker from '@/components/DocPicker'
 import { announceChatsChanged } from '@/components/AppShell'
-import type { Chat, DocumentMeta, Message, ModelChoice } from '@/lib/types'
+import type { Chat, DocumentMeta, Message } from '@/lib/types'
 
 interface ChatViewProps {
   chat: Chat | null
@@ -67,9 +67,11 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   const router = useRouter()
   const { settings, connected, savePreferences } = useSettings()
 
-  // Which brain answers. 'custom' only wins when an endpoint is actually
-  // connected, so a stale preference can never point the toggle at nothing.
-  const model: ModelChoice = connected && settings.preferredModel === 'custom' ? 'custom' : 'bodha'
+  // Which brain answers: 'bodha', or the id of one of the student's own models.
+  // Resolved against what actually exists, so a renamed or deleted model falls
+  // back to BODHA instead of pointing the toggle at nothing.
+  const model = activeModel(settings)
+  const modelOptions = toggleOptions(settings)
 
   // The chosen voice is read through a ref inside callbacks so switching it in
   // Settings does not rebuild the streaming loop.
@@ -166,7 +168,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
 
   // ─── Streaming ────────────────────────────────────────────────────────────
   const runStream = useCallback(
-    async (targetChatId: string, body: { content?: string; regenerate?: boolean; model?: ModelChoice }, optimistic?: Message) => {
+    async (targetChatId: string, body: { content?: string; regenerate?: boolean; model?: string }, optimistic?: Message) => {
       setBusy(true)
       setError(null)
       setNotice(null)
@@ -454,7 +456,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
 
           {connected && settings.custom && (
             <ModelToggle
-              label={settings.custom.label}
+              options={modelOptions}
               value={model}
               onChange={choice => void savePreferences({ preferredModel: choice })}
               busy={busy}

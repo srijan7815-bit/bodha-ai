@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { authFetch } from '@/lib/firebase/client-token'
-import { DEFAULT_SETTINGS, type PublicSettings } from '@/lib/types'
+import { BODHA_MODEL, DEFAULT_SETTINGS, type CustomModel, type PublicSettings } from '@/lib/types'
 
 /**
  * The student's settings, shared across the app.
@@ -17,7 +17,7 @@ import { DEFAULT_SETTINGS, type PublicSettings } from '@/lib/types'
 interface State {
   settings: PublicSettings
   loading: boolean
-  /** null until the first fetch resolves; false when the student has none. */
+  /** false until an endpoint is connected. */
   connected: boolean
 }
 
@@ -63,6 +63,24 @@ export function refreshSettings(force = false): Promise<void> {
   return inflight
 }
 
+/**
+ * Which models the chat toggle should offer: बोध first, then every model on the
+ * student's own endpoint, in the order they arranged them.
+ */
+export function toggleOptions(settings: PublicSettings): Array<{ id: string; label: string }> {
+  const options = [{ id: BODHA_MODEL, label: 'बोध' }]
+  for (const model of settings.custom?.models ?? []) {
+    options.push({ id: model.id, label: model.label || model.id })
+  }
+  return options
+}
+
+/** The id the toggle should show as active, given what actually exists. */
+export function activeModel(settings: PublicSettings): string {
+  const ids = toggleOptions(settings).map(option => option.id)
+  return ids.includes(settings.preferredModel) ? settings.preferredModel : BODHA_MODEL
+}
+
 /** Save preferences (the model toggle, the voice) with an optimistic UI. */
 export async function savePreferences(patch: Partial<Pick<PublicSettings, 'preferredModel' | 'voice'>>) {
   const previous = state.settings
@@ -86,13 +104,26 @@ export async function savePreferences(patch: Partial<Pick<PublicSettings, 'prefe
   }
 }
 
+export interface ConnectResult {
+  ok: boolean
+  /** 'ok' when at least one model answered; 'untested' when saved anyway. */
+  status?: 'ok' | 'untested'
+  sample?: string
+  warning?: string
+  error?: string
+  /** Per-model detail, so the form can mark each row. */
+  results?: Array<{ id: string; ok: boolean; sample?: string; error?: string }>
+  /** The failure is one the student may choose to override. */
+  canSaveAnyway?: boolean
+}
+
 /** Connect or replace the student's own OpenAI-compatible endpoint. */
 export async function connectEndpoint(input: {
   baseUrl: string
   apiKey: string
-  model: string
-  label?: string
-}): Promise<{ ok: true; sample: string } | { ok: false; error: string }> {
+  models: CustomModel[]
+  skipTest?: boolean
+}): Promise<ConnectResult> {
   try {
     const res = await authFetch('/api/settings', {
       method: 'PUT',
@@ -101,14 +132,47 @@ export async function connectEndpoint(input: {
     })
     const data = (await res.json().catch(() => ({}))) as {
       settings?: PublicSettings
-      test?: { sample?: string }
+      results?: ConnectResult['results']
+      warning?: string
       error?: string
+      canSaveAnyway?: boolean
     }
     if (!res.ok || !data.settings) {
-      return { ok: false, error: data.error || 'That endpoint could not be saved.' }
+      return {
+        ok: false,
+        error: data.error || 'That endpoint could not be saved.',
+        results: data.results,
+        canSaveAnyway: data.canSaveAnyway,
+      }
     }
     setSettings(data.settings)
-    return { ok: true, sample: data.test?.sample ?? '' }
+    const firstOk = data.results?.find(result => result.ok)
+    return {
+      ok: true,
+      status: data.warning ? 'untested' : 'ok',
+      sample: firstOk?.sample ?? '',
+      warning: data.warning,
+      results: data.results,
+    }
+  } catch {
+    return { ok: false, error: 'Could not reach the server. Check your connection and try again.' }
+  }
+}
+
+/** Ask the endpoint which models it serves (best effort — many have no /models). */
+export async function fetchModels(input: {
+  baseUrl: string
+  apiKey: string
+}): Promise<{ ok: true; models: CustomModel[] } | { ok: false; error: string }> {
+  try {
+    const res = await authFetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    })
+    const data = (await res.json().catch(() => ({}))) as { models?: CustomModel[]; error?: string }
+    if (!res.ok || !data.models) return { ok: false, error: data.error || 'Could not list the models.' }
+    return { ok: true, models: data.models }
   } catch {
     return { ok: false, error: 'Could not reach the server. Check your connection and try again.' }
   }
@@ -130,8 +194,11 @@ export interface UseSettings {
   settings: PublicSettings
   loading: boolean
   connected: boolean
+  /** Which model answers right now (always a real one). */
+  active: string
   savePreferences: typeof savePreferences
   connectEndpoint: typeof connectEndpoint
+  fetchModels: typeof fetchModels
   disconnectEndpoint: typeof disconnectEndpoint
   refresh: () => Promise<void>
 }
@@ -153,8 +220,10 @@ export function useSettings(): UseSettings {
     settings: snapshot.settings,
     loading: snapshot.loading,
     connected: snapshot.connected,
+    active: activeModel(snapshot.settings),
     savePreferences,
     connectEndpoint,
+    fetchModels,
     disconnectEndpoint,
     refresh,
   }

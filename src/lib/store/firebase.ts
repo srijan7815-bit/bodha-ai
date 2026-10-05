@@ -459,6 +459,8 @@ export class FirebaseStore implements Store {
     const admin = await this.admin()
     const snap = await this.settingsRef(admin, userId).get()
     if (!snap.exists) return null
+    // Returned raw; every reader goes through migrateSettings, so a document
+    // written by an older release still reads correctly.
     return snap.data() as UserSettings
   }
 

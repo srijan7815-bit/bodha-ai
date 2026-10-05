@@ -1,11 +1,11 @@
-import type { CustomEndpoint, TutorMessage } from '@/lib/types'
+import type { CustomEndpoint, CustomModel, TutorMessage } from '@/lib/types'
 import type { ProviderConfig } from './provider'
 
 /**
  * A student's own model, treated as a first-class member of the chain.
  *
  * Anything OpenAI-compatible is accepted — OpenAI, OpenRouter, Together, Groq,
- * a university gateway, or a model running on the student's laptop. Two rules
+ * a university gateway, or a model running on the student's laptop. Three rules
  * make that safe:
  *
  *   • No BODHA tuning is applied. `extraBody` carries provider-specific
@@ -13,9 +13,8 @@ import type { ProviderConfig } from './provider'
  *     vendors reject outright, so a custom entry sends a plain request.
  *   • The budget is generous. A model on someone's own machine may take ten
  *     seconds to load and answer, and a 6-second leash would call that broken.
- *
- * The key lives only on the server: this object is built inside an API route
- * from the stored settings and never travels back to the browser.
+ *   • The key lives only on the server: this object is built inside an API route
+ *     from the stored settings and never travels back to the browser.
  */
 
 export const CUSTOM_FIRST_BYTE_MS = Number(process.env.AI_CUSTOM_FIRST_BYTE_MS ?? 20_000)
@@ -55,18 +54,22 @@ export function blockedEndpointReason(url: string): string | null {
 
 /** Trim a base URL to the shape `{base}/chat/completions` expects. */
 export function normalizeBaseUrl(input: string): string {
-  let url = input.trim().replace(/\s+/g, '')
+  let url = String(input ?? '').trim().replace(/\s+/g, '')
   if (!url) return ''
   if (!/^https?:\/\//i.test(url)) url = `https://${url}`
-  return url.replace(/\/+$/, '').replace(/\/chat\/completions$/i, '')
+  // A student will paste a full endpoint URL; take the part before the verb.
+  return url
+    .replace(/\/+$/, '')
+    .replace(/\/(chat\/completions|models|completions|embeddings)$/i, '')
 }
 
-/** A friendly default label when the student does not give one. */
-export function defaultLabel(endpoint: Pick<CustomEndpoint, 'label' | 'model'>): string {
-  const label = endpoint.label.trim()
-  if (label) return label.slice(0, 32)
-  const model = endpoint.model.trim()
-  return (model.split('/').pop() || model || 'My model').slice(0, 32)
+/** A friendly name for a model when the student does not give one. */
+export function defaultModelLabel(id: string): string {
+  const raw = id.trim()
+  if (!raw) return 'My model'
+  // `anthropic/claude-sonnet-4-5-20250929` reads better as `claude-sonnet-4-5`.
+  const tail = raw.split('/').pop() || raw
+  return tail.replace(/-\d{8}$/, '').slice(0, 32)
 }
 
 /** Problems a student can actually fix, phrased as such. */
@@ -78,34 +81,90 @@ export function validateEndpoint(endpoint: Partial<CustomEndpoint>): string | nu
   }
   const blocked = blockedEndpointReason(baseUrl)
   if (blocked) return blocked
-  if (!endpoint.model?.trim()) return 'Add the model name your endpoint expects, for example gpt-4o-mini'
-  if (!endpoint.apiKey?.trim()) return 'Add your API key.'
+
+  const models = endpoint.models ?? []
+  if (!models.length) return 'Add at least one model — the name your provider expects in the `model` field.'
+  if (models.some(model => !model.id.trim())) return 'Every model needs an id — the exact name your provider expects.'
   return null
 }
 
-/** The chain entry for one student's endpoint. */
-export function customProviderConfig(endpoint: CustomEndpoint): ProviderConfig {
+/** Clean up whatever the form sent before it is stored. */
+export function normalizeEndpoint(input: Partial<CustomEndpoint>): CustomEndpoint {
+  const models: CustomModel[] = []
+  for (const entry of input.models ?? []) {
+    const id = String(entry?.id ?? '').trim()
+    if (!id) continue
+    const label = String(entry?.label ?? '').trim() || defaultModelLabel(id)
+    if (models.some(model => model.id === id)) continue // one entry per model id
+    models.push({ id, label: label.slice(0, 32) })
+  }
+  return {
+    baseUrl: normalizeBaseUrl(input.baseUrl ?? ''),
+    apiKey: String(input.apiKey ?? '').trim(),
+    models,
+    verified: input.verified === true,
+    verifiedAt: input.verifiedAt,
+  }
+}
+
+/** The chain entry for one model on a student's endpoint. */
+export function customProviderConfig(endpoint: CustomEndpoint, model: CustomModel): ProviderConfig {
   return {
     name: 'custom',
     baseUrl: normalizeBaseUrl(endpoint.baseUrl),
     apiKey: endpoint.apiKey,
-    model: endpoint.model.trim(),
+    model: model.id.trim(),
     thinking: true, // never inject BODHA's provider-specific tuning
     firstByteMs: CUSTOM_FIRST_BYTE_MS,
-    label: defaultLabel(endpoint),
+    label: model.label.trim() || defaultModelLabel(model.id),
   }
+}
+
+/* ─── Talking to the endpoint ─────────────────────────────────────────────── */
+
+function headersFor(apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  // Self-hosted endpoints (Ollama, LM Studio, vLLM) usually want no key at all,
+  // so an empty one sends no header rather than an empty one.
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+  return headers
+}
+
+/** Turn a fetch failure into something a student can act on. */
+function describeNetworkFailure(err: unknown, timeoutMs: number): string {
+  const message = (err as Error)?.message ?? ''
+  const name = (err as Error)?.name ?? ''
+  if (name === 'TimeoutError' || /abort|timed? ?out/i.test(message)) {
+    return `The service accepted the connection but sent nothing back within ${Math.round(timeoutMs / 1000)} seconds. That usually means the provider is down, or that it refuses requests from datacenter servers — a server-side app like BODHA cannot call it even when the same URL works in your browser.`
+  }
+  if (/ENOTFOUND|EAI_AGAIN/i.test(message)) {
+    return 'That host name could not be found. Check the address is spelled correctly.'
+  }
+  if (/ECONNREFUSED|ECONNRESET|fetch failed|network/i.test(message)) {
+    return 'Could not reach that address. Check the URL is spelled correctly, that the service is running, and that it is reachable from the internet.'
+  }
+  return `That endpoint could not be used — ${message}`
+}
+
+export interface ModelTestResult {
+  id: string
+  ok: boolean
+  /** The model's own words, shown to the student as proof it really answered. */
+  sample?: string
+  error?: string
 }
 
 /**
  * One tiny round trip that proves the endpoint, the key and the model name all
- * work together — run before we save anything, so the student learns about a
- * typo from a message in the form rather than from a failed question.
+ * work together — run before saving, so a typo is caught in the form rather
+ * than surfacing later as a failed question.
  */
-export async function testEndpoint(
+export async function testModel(
   endpoint: CustomEndpoint,
-  timeoutMs = 20_000,
-): Promise<{ ok: true; sample: string } | { ok: false; error: string }> {
-  const cfg = customProviderConfig(endpoint)
+  model: CustomModel,
+  timeoutMs = 12_000,
+): Promise<ModelTestResult> {
+  const cfg = customProviderConfig(endpoint, model)
   const messages: TutorMessage[] = [
     { role: 'system', content: 'Reply with the single word: ready' },
     { role: 'user', content: 'ping' },
@@ -115,11 +174,7 @@ export async function testEndpoint(
   try {
     res = await fetch(`${cfg.baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${cfg.apiKey}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: { ...headersFor(cfg.apiKey), Accept: 'application/json' },
       body: JSON.stringify({
         model: cfg.model,
         stream: false,
@@ -130,40 +185,85 @@ export async function testEndpoint(
       signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (err) {
-    const message = (err as Error).message
-    if ((err as Error).name === 'TimeoutError' || /abort/i.test(message)) {
-      return { ok: false, error: 'The endpoint did not answer in time. If it is your own machine, make sure it is running and reachable from the internet.' }
-    }
-    if (/fetch failed|ENOTFOUND|ECONNREFUSED|network/i.test(message)) {
-      return {
-        ok: false,
-        error: 'Could not reach that address. Check the URL is spelled correctly, that the service is running, and that it is reachable from the internet.',
-      }
-    }
-    return { ok: false, error: `That endpoint could not be used — ${message}` }
+    return { id: model.id, ok: false, error: describeNetworkFailure(err, timeoutMs) }
   }
 
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
     // Vendor errors are unrecognisable raw JSON; say what each one means.
     if (res.status === 401 || res.status === 403) {
-      return { ok: false, error: `The endpoint rejected the API key (HTTP ${res.status}). Check the key and whether it has access to ${cfg.model}.` }
+      return { id: model.id, ok: false, error: `The endpoint rejected the API key (HTTP ${res.status}). Check the key, and whether it may use ${model.id}.` }
     }
     if (res.status === 404) {
-      return { ok: false, error: `HTTP 404 — the URL is probably wrong. It should be the part before /chat/completions, for example https://api.openai.com/v1` }
+      return { id: model.id, ok: false, error: `HTTP 404 — either the URL is wrong (it should be the part before /chat/completions, e.g. https://api.openai.com/v1) or the endpoint does not serve the model “${model.id}”.` }
     }
     if (res.status === 429) {
-      return { ok: false, error: 'The endpoint is rate-limiting this key (HTTP 429). It works, but you may be asked to slow down.' }
+      return { id: model.id, ok: false, error: 'The endpoint is rate-limiting this key (HTTP 429). The details are right, but it may ask you to slow down.' }
     }
-    return { ok: false, error: `The endpoint answered HTTP ${res.status}. ${detail.slice(0, 180)}`.trim() }
+    return { id: model.id, ok: false, error: `The endpoint answered HTTP ${res.status}. ${detail.slice(0, 180)}`.trim() }
   }
 
   const data = (await res.json().catch(() => null)) as
-    | { choices?: Array<{ message?: { content?: string | null } }> }
+    | { choices?: Array<{ message?: { content?: string | null; reasoning_content?: string | null } }> }
     | null
-  const sample = data?.choices?.[0]?.message?.content?.trim() ?? ''
+  const choice = data?.choices?.[0]?.message
+  const sample = (choice?.content || choice?.reasoning_content || '').trim()
   if (!sample) {
-    return { ok: false, error: 'The endpoint answered, but with no text. That usually means the model name is not one it serves.' }
+    return { id: model.id, ok: false, error: 'The endpoint answered, but with no text — usually a sign that the model name is not one it serves.' }
   }
-  return { ok: true, sample: sample.slice(0, 60) }
+  return { id: model.id, ok: true, sample: sample.slice(0, 60) }
+}
+
+/** Test every model on an endpoint at once, so the form waits once, not N times. */
+export async function testEndpointModels(
+  endpoint: CustomEndpoint,
+  timeoutMs = 12_000,
+): Promise<ModelTestResult[]> {
+  return Promise.all(endpoint.models.map(model => testModel(endpoint, model, timeoutMs)))
+}
+
+/**
+ * Ask the endpoint what it serves, so the student can pick names instead of
+ * typing them. Best effort by design: plenty of OpenAI-compatible servers have
+ * no `/models` route at all, and that is not an error — it just means the list
+ * has to be typed.
+ */
+export async function listEndpointModels(
+  endpoint: Pick<CustomEndpoint, 'baseUrl' | 'apiKey'>,
+): Promise<{ ok: true; models: CustomModel[] } | { ok: false; error: string }> {
+  const baseUrl = normalizeBaseUrl(endpoint.baseUrl)
+  if (!baseUrl) return { ok: false, error: 'Add the endpoint URL first.' }
+
+  const blocked = blockedEndpointReason(baseUrl)
+  if (blocked) return { ok: false, error: blocked }
+
+  let res: Response
+  try {
+    res = await fetch(`${baseUrl}/models`, {
+      headers: endpoint.apiKey ? { Authorization: `Bearer ${endpoint.apiKey}` } : {},
+      signal: AbortSignal.timeout(12_000),
+    })
+  } catch (err) {
+    return { ok: false, error: describeNetworkFailure(err, 12_000) }
+  }
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: `The endpoint would not list its models without a valid key (HTTP ${res.status}).` }
+    }
+    return { ok: false, error: `This endpoint does not list its models (HTTP ${res.status}). Type the model name instead — it is the exact string your provider documents.` }
+  }
+
+  const data = (await res.json().catch(() => null)) as
+    | { data?: Array<{ id?: string; name?: string }>; models?: Array<{ id?: string; name?: string }> }
+    | null
+  const raw = data?.data ?? data?.models ?? []
+  const models: CustomModel[] = []
+  for (const entry of raw) {
+    const id = String(entry?.id ?? entry?.name ?? '').trim()
+    if (!id || models.some(model => model.id === id)) continue
+    models.push({ id, label: defaultModelLabel(id) })
+  }
+  if (!models.length) return { ok: false, error: 'The endpoint answered, but listed no models.' }
+  return { ok: true, models }
 }

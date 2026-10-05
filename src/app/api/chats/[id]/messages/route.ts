@@ -5,6 +5,7 @@ import { getStore } from '@/lib/store'
 import { streamTutorReply } from '@/lib/ai'
 import { blockedEndpointReason, customProviderConfig, normalizeBaseUrl } from '@/lib/ai/custom'
 import type { ProviderConfig } from '@/lib/ai/provider'
+import { BODHA_MODEL, migrateSettings } from '@/lib/types'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import type { Message } from '@/lib/types'
 
@@ -17,8 +18,11 @@ const bodySchema = z
   .object({
     content: z.string().trim().max(12_000, 'That message is a bit too long').optional(),
     regenerate: z.boolean().optional(),
-    /** 'custom' routes this message to the student's own endpoint. */
-    model: z.enum(['bodha', 'custom']).optional(),
+    /**
+     * Which model answers: 'bodha' for BODHA's own chain, or the id of one of
+     * the student's connected models.
+     */
+    model: z.string().trim().max(120).optional(),
   })
   .refine(b => b.regenerate === true || (typeof b.content === 'string' && b.content.length > 0), {
     message: 'Message is empty',
@@ -89,14 +93,15 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   // Their own model, when they have connected one and the toggle is on it.
-  const settings = await store.getUserSettings(user.id).catch(() => null)
-  const wantsCustom = parsed.data.model ? parsed.data.model === 'custom' : settings?.preferredModel === 'custom'
+  const settings = migrateSettings(await store.getUserSettings(user.id).catch(() => null))
+  const wanted = parsed.data.model ?? settings?.preferredModel ?? BODHA_MODEL
   const preferred: ProviderConfig[] = []
-  if (wantsCustom && settings?.custom) {
+  if (wanted !== BODHA_MODEL && settings?.custom) {
+    const chosen = settings.custom.models.find(model => model.id === wanted)
     // Re-checked at use, not only when it was saved: a stored address that is
     // no longer acceptable must not be dialled just because it predates the rule.
-    if (!blockedEndpointReason(normalizeBaseUrl(settings.custom.baseUrl))) {
-      preferred.push(customProviderConfig(settings.custom))
+    if (chosen && !blockedEndpointReason(normalizeBaseUrl(settings.custom.baseUrl))) {
+      preferred.push(customProviderConfig(settings.custom, chosen))
     }
   }
 
