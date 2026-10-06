@@ -26,6 +26,10 @@
  * no code change and no redeploy.
  */
 
+import { chunkForSpeech, mapLimit } from './speech-chunks'
+
+export { chunkForSpeech, SPEECH_CHUNK_CHARS } from './speech-chunks'
+
 const WHISPER_FUNCTION_ID = process.env.WHISPER_FUNCTION_ID || 'b702f636-f60c-4a3d-a6f4-f3568c13bd7d'
 export const PARAKEET_FUNCTION_ID = process.env.PARAKEET_FUNCTION_ID || '1598d209-5e27-4d3c-8079-4751568b1081'
 export const MAGPIE_FUNCTION_ID = process.env.MAGPIE_FUNCTION_ID || '877104f7-e885-42b9-8de8-f6e4c6303969'
@@ -35,8 +39,10 @@ export const MAGPIE_FUNCTION_ID = process.env.MAGPIE_FUNCTION_ID || '877104f7-e8
  * that a broken route costs nothing, and short enough that a recovery is picked
  * up while the student is still using the app.
  */
-const WHISPER_BREAKER_MS = 10 * 60 * 1000
+const WHISPER_BREAKER_MS = 5 * 60 * 1000
 let whisperDownUntil = 0
+/** What NVIDIA said the last time Whisper was tried — surfaced in /api/health. */
+let whisperLastError: string | null = null
 
 export function nvcfURL(functionId: string, path: string) {
   return `https://${functionId}.invocation.api.nvcf.nvidia.com${path}`
@@ -82,6 +88,85 @@ function fishReference(voice?: string | null): string {
   return FISH_VOICES[raw] ?? FISH_VOICES.Aria
 }
 
+/**
+ * Long passages are spoken in pieces.
+ *
+ * Fish Audio reads 1 400 characters in a single take in ~33 s, which no request
+ * timeout survives and which leaves the student waiting in silence — the reason
+ * read-aloud appeared broken on exactly the long answers worth reading. The
+ * same passage split into 320-character sentences comes back in ~8 s because
+ * the pieces are synthesised at the same time, and each piece is comfortably
+ * inside every timeout. Short text is still a single request.
+ */
+/**
+ * Splits a WAV into its format and sample data, so several clips can be joined
+ * into one. Magpie answers with a real RIFF file per request; joining them means
+ * keeping the first format block and appending every data block in order.
+ */
+function readWav(buf: Buffer): { fmt: Buffer; data: Buffer } | null {
+  if (buf.length < 44 || buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WAVE') return null
+  let offset = 12
+  let fmt: Buffer | null = null
+  const datas: Buffer[] = []
+  while (offset + 8 <= buf.length) {
+    const id = buf.toString('latin1', offset, offset + 4)
+    const size = buf.readUInt32LE(offset + 4)
+    const body = buf.subarray(offset + 8, Math.min(offset + 8 + size, buf.length))
+    if (id === 'fmt ') fmt = body
+    else if (id === 'data') datas.push(body)
+    offset += 8 + size + (size % 2)
+  }
+  if (!fmt || !datas.length) return null
+  return { fmt, data: Buffer.concat(datas) }
+}
+
+function writeWav(fmt: Buffer, data: Buffer): Buffer {
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + data.length, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  fmt.copy(header, 20, 0, Math.min(16, fmt.length))
+  header.write('data', 36)
+  header.writeUInt32LE(data.length, 40)
+  return Buffer.concat([header, data])
+}
+
+function mergeWavs(parts: Buffer[]): Buffer | null {
+  const parsed = parts.map(readWav)
+  if (parsed.some(p => !p)) return null
+  // Sample rate and encoding must match or the join would sound wrong.
+  const first = parsed[0]!
+  const signature = (fmt: Buffer) => `${fmt.readUInt16LE(0)}:${fmt.readUInt16LE(2)}:${fmt.readUInt32LE(4)}:${fmt.readUInt16LE(14)}`
+  if (parsed.some(p => signature(p!.fmt) !== signature(first.fmt))) return null
+  return writeWav(first.fmt, Buffer.concat(parsed.map(p => p!.data)))
+}
+
+function toArrayBuffer(buf: Buffer): ArrayBuffer {
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
+}
+
+/** Whether Whisper is worth trying right now, and what happened last time. */
+export function speechStatus() {
+  const now = Date.now()
+  return {
+    tts: {
+      primary: 'Fish Audio s2.1-pro',
+      fallback: 'NVIDIA Magpie Multilingual',
+      configured: Boolean(process.env.FISH_AUDIO_API_KEY?.trim()),
+    },
+    stt: {
+      primary: 'whisper-large-v3',
+      fallback: 'parakeet-ctc-1.1b-asr',
+      /** False only while NVIDIA's Whisper function is answering 5xx. */
+      primaryTrying: now >= whisperDownUntil,
+      retryInSeconds: whisperDownUntil > now ? Math.ceil((whisperDownUntil - now) / 1000) : 0,
+      lastError: whisperLastError,
+    },
+  }
+}
+
 export interface Synthesized {
   bytes: ArrayBuffer
   contentType: string
@@ -107,16 +192,64 @@ export async function synthesize(
   const magpieFirst = opts.provider === 'magpie'
 
   if (!magpieFirst) {
-    const early = await fishSynthesize(text, opts.voice, timeout)
+    const early = await fishSynthesizeLong(text, opts.voice, timeout)
     if (early) return early
   }
 
-  const magpie = await magpieSynthesize(text, opts.voice, language, timeout)
+  const magpie = await magpieSynthesizeLong(text, opts.voice, language, timeout)
   if (magpie) return magpie
-  if (magpieFirst) return fishSynthesize(text, opts.voice, timeout)
+  if (magpieFirst) return fishSynthesizeLong(text, opts.voice, timeout)
 
   return null
 }
+
+/**
+ * Fish, for any length of text. One request for short passages; several at once
+ * for long ones, joined in order — MP3 frames concatenate into a file every
+ * player accepts.
+ */
+async function fishSynthesizeLong(
+  text: string,
+  voice: string | null | undefined,
+  timeout: number,
+): Promise<Synthesized | null> {
+  const chunks = chunkForSpeech(text)
+  if (!chunks.length) return null
+  if (chunks.length === 1) return fishSynthesize(chunks[0], voice, timeout)
+
+  const parts = await mapLimit(chunks, 4, chunk => fishSynthesize(chunk, voice, timeout))
+  // A missing piece would silently cut the answer in half, so a partial result
+  // is treated as no result and the other provider gets the whole passage.
+  if (parts.some(part => !part)) return null
+  const bytes = Buffer.concat(parts.map(part => Buffer.from(part!.bytes)))
+  return { bytes: toArrayBuffer(bytes), contentType: 'audio/mpeg', provider: 'fish' }
+}
+
+/**
+ * Magpie, for the lengths Magpie is good at.
+ *
+ * NVIDIA's hosted Magpie function holds one worker and starts cold: in testing
+ * a 130-character piece answered in 6 s, a 320-character piece timed out at
+ * 40 s, and a 640-character piece answered in 19 s. That is fine for Live Mode,
+ * which speaks one sentence at a time, and wrong for a passage — waiting a
+ * minute for a fallback is worse than letting the device voice read it in a
+ * second. Anything longer than one piece is therefore not Magpie's job.
+ */
+const MAGPIE_MAX_CHARS = 400
+
+async function magpieSynthesizeLong(
+  text: string,
+  voice: string | null | undefined,
+  language: string,
+  timeout: number,
+): Promise<Synthesized | null> {
+  if (text.length > MAGPIE_MAX_CHARS) {
+    console.warn('[speech] Magpie skipped: NVIDIA\'s function is serial and cold for text this long')
+    return null
+  }
+  return magpieSynthesize(text, voice, language, timeout)
+}
+
 
 async function fishSynthesize(
   text: string,
@@ -271,7 +404,8 @@ export async function transcribe(
         onFail: status => {
           if (status >= 500) {
             whisperDownUntil = Date.now() + WHISPER_BREAKER_MS
-            console.warn('[speech] whisper-large-v3 answered', status, '— skipping it for 10 minutes')
+            whisperLastError = `HTTP ${status} from NVIDIA's whisper-large-v3 function`
+            console.warn('[speech] whisper-large-v3 answered', status, '— skipping it for 5 minutes')
           }
         },
       })
@@ -328,7 +462,14 @@ export async function transcribe(
         results?: Array<{ alternatives?: Array<{ transcript?: string }> }>
       }
       const text = (data.text || data.transcript || data.results?.[0]?.alternatives?.[0]?.transcript || '').trim()
-      if (text) return { text, provider: attempt.label }
+      if (text) {
+        if (attempt.label === 'whisper-large-v3') {
+          // Recovered — stop stepping over it and forget the failure.
+          whisperDownUntil = 0
+          whisperLastError = null
+        }
+        return { text, provider: attempt.label }
+      }
       lastStatus = 422
     } catch (err) {
       console.warn(`[speech] ${attempt.label} STT failed:`, (err as Error).message)

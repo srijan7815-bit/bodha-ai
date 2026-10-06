@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -11,9 +11,11 @@ import {
   Loader2,
   Mic,
   Moon,
+  Play,
   Plug,
   Plus,
   RefreshCw,
+  Square,
   Sun,
   Trash2,
   Volume2,
@@ -33,14 +35,22 @@ import type { CustomModel } from '@/lib/types'
  * anything is saved, and never sent back to the browser.
  */
 
+/**
+ * The voices BODHA can read in. These are Fish Audio reference voices, so the
+ * name the student picks here is the exact voice they will hear — and the same
+ * one behind Live Mode when Fish answers there too.
+ */
 const VOICES = [
-  { id: 'Aria', label: 'Aria — warm, female' },
-  { id: 'Sofia', label: 'Sofia — young, female' },
-  { id: 'Mia', label: 'Mia — light, female' },
-  { id: 'Ray', label: 'Ray — narration, male' },
-  { id: 'Jason', label: 'Jason — confident, male' },
-  { id: 'Leo', label: 'Leo — clear, male' },
+  { id: 'Aria', name: 'Aria', trait: 'warm, female' },
+  { id: 'Sofia', name: 'Sofia', trait: 'young, female' },
+  { id: 'Mia', name: 'Mia', trait: 'light, female' },
+  { id: 'Ray', name: 'Ray', trait: 'narration, male' },
+  { id: 'Jason', name: 'Jason', trait: 'confident, male' },
+  { id: 'Leo', name: 'Leo', trait: 'clear, male' },
 ]
+const DEFAULT_VOICE = 'Aria'
+/** One line, long enough to judge a voice and short enough to feel instant. */
+const PREVIEW_LINE = 'Bodha means awakening — the moment understanding clicks.'
 
 export default function SettingsView() {
   const { user } = useAuth()
@@ -57,10 +67,126 @@ export default function SettingsView() {
   /** Per-model outcome of the last test, keyed by model id. */
   const [marks, setMarks] = useState<Record<string, { ok: boolean; note: string }>>({})
   const [dark, setDark] = useState(false)
+  /** Voice previews — one clip at a time, from the same route read-aloud uses. */
+  const [preview, setPreview] = useState<{
+    loading: string | null
+    playing: string | null
+    note: { kind: 'ok' | 'error'; text: string } | null
+  }>({ loading: null, playing: null, note: null })
+  const previewAudio = useRef<HTMLAudioElement | null>(null)
+  const previewAbort = useRef<AbortController | null>(null)
+  const playingRef = useRef<string | null>(null)
+  /** What the server says about dictation right now, so this page never lies. */
+  const [stt, setStt] = useState<{ trying: boolean; lastError: string | null } | null>(null)
 
   useEffect(() => {
     setDark(document.documentElement.classList.contains('dark'))
   }, [])
+
+  useEffect(() => {
+    let alive = true
+    void fetch('/api/health')
+      .then(res => res.json())
+      .then((data: { speech?: { stt?: { primaryTrying?: boolean; lastError?: string | null } } }) => {
+        const state = data.speech?.stt
+        if (alive && state) setStt({ trying: state.primaryTrying !== false, lastError: state.lastError ?? null })
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const stopPreview = useCallback(() => {
+    previewAbort.current?.abort()
+    previewAbort.current = null
+    const audio = previewAudio.current
+    previewAudio.current = null
+    playingRef.current = null
+    if (audio) {
+      audio.onended = null
+      audio.onerror = null
+      audio.pause()
+      URL.revokeObjectURL(audio.src)
+    }
+    setPreview(state => ({ ...state, loading: null, playing: null }))
+  }, [])
+
+  useEffect(() => stopPreview, [stopPreview])
+
+  /**
+   * Plays one line in a voice, through /api/tts with Fish Audio asked for
+   * explicitly — the same call the read-aloud button makes, so what is heard
+   * here is what will be heard there.
+   */
+  const previewVoice = useCallback(
+    async (voiceId: string) => {
+      if (playingRef.current === voiceId) {
+        stopPreview()
+        return
+      }
+      stopPreview()
+      setPreview({ loading: voiceId, playing: null, note: null })
+      const controller = new AbortController()
+      previewAbort.current = controller
+      try {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: PREVIEW_LINE, voice: voiceId, provider: 'fish', language: 'en-US' }),
+          signal: controller.signal,
+        })
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string }
+          setPreview({
+            loading: null,
+            playing: null,
+            note: { kind: 'error', text: data.error || 'The voice service did not answer. Try again in a moment.' },
+          })
+          return
+        }
+        const provider = res.headers.get('X-TTS-Provider')
+        const bytes = await res.arrayBuffer()
+        const url = URL.createObjectURL(
+          new Blob([bytes], { type: res.headers.get('Content-Type') || 'audio/mpeg' }),
+        )
+        const audio = new Audio(url)
+        audio.preload = 'auto'
+        previewAudio.current = audio
+        audio.onended = () => stopPreview()
+        audio.onerror = () =>
+          setPreview(state => ({
+            ...state,
+            loading: null,
+            playing: null,
+            note: { kind: 'error', text: 'This browser could not play that clip.' },
+          }))
+        await audio.play()
+        playingRef.current = voiceId
+        setPreview({
+          loading: null,
+          playing: voiceId,
+          note: {
+            kind: 'ok',
+            text:
+              provider === 'magpie'
+                ? 'Fish Audio did not answer, so NVIDIA’s voice read this preview.'
+                : 'Read by Fish Audio — the voice your read-aloud button will use.',
+          },
+        })
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          setPreview(state => ({
+            ...state,
+            loading: null,
+            playing: null,
+            note: { kind: 'error', text: 'Could not reach the voice service.' },
+          }))
+        }
+      }
+    },
+    [stopPreview],
+  )
 
   // A connected endpoint fills the form so it can be edited; the key stays
   // blank on purpose — the browser has never seen it and cannot show it.
@@ -388,27 +514,108 @@ export default function SettingsView() {
         <Section
           icon={Volume2}
           title="Voice"
-          hint="Used by read-aloud and by Live Mode. Read-aloud always asks Fish Audio first; Live Mode uses NVIDIA's faster voice and falls back to Fish."
+          hint="Every voice here is Fish Audio. Tap one to use it for read-aloud and Live Mode, or press ▶ to hear it first — the preview is the same call the read-aloud button makes."
         >
-          <label className="flex items-center justify-between gap-4">
-            <span className="text-ui font-medium text-foreground">Speaking voice</span>
-            <select
-              value={settings.voice ?? 'Aria'}
-              onChange={event => void savePreferences({ voice: event.target.value })}
-              className="h-9 min-w-0 flex-1 max-w-[260px] rounded-lg border border-border/80 bg-surface px-3 text-ui text-foreground outline-none transition-colors focus-visible:border-primary/50"
-            >
-              {VOICES.map(voice => (
-                <option key={voice.id} value={voice.id}>
-                  {voice.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="mt-2 flex items-start gap-2 text-ui-sm text-muted-foreground">
-            <Mic className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={1.7} />
-            Dictation is separate and has no setting: speak into the chat composer and your words are
-            typed for you.
+          <ul className="space-y-1.5">
+            {VOICES.map(voice => {
+              const active = (settings.voice ?? DEFAULT_VOICE) === voice.id
+              const loading = preview.loading === voice.id
+              const playing = preview.playing === voice.id
+              return (
+                <li key={voice.id}>
+                  <div
+                    className={cn(
+                      'flex items-center gap-3 rounded-xl border px-3 py-2 transition-colors',
+                      active
+                        ? 'border-primary/40 bg-primary/[0.06]'
+                        : 'border-border/70 bg-background/40 hover:border-primary/25',
+                    )}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => void savePreferences({ voice: voice.id })}
+                      aria-pressed={active}
+                      className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                    >
+                      <span
+                        className={cn(
+                          'grid h-4 w-4 shrink-0 place-items-center rounded-full border transition-colors',
+                          active ? 'border-primary bg-primary text-primary-foreground' : 'border-border',
+                        )}
+                      >
+                        {active && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-ui font-medium text-foreground">
+                          {voice.name}
+                          {active && !settings.voice && (
+                            <span className="ml-2 text-ui-sm font-normal text-muted-foreground">default</span>
+                          )}
+                        </span>
+                        <span className="block truncate text-ui-sm text-muted-foreground">{voice.trait}</span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void previewVoice(voice.id)}
+                      title={playing ? 'Stop the preview' : `Hear ${voice.name}`}
+                      aria-label={playing ? 'Stop the preview' : `Hear ${voice.name}`}
+                      className="icon-btn-sm shrink-0"
+                    >
+                      {loading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.9} />
+                      ) : playing ? (
+                        <Square className="h-3 w-3" strokeWidth={2} />
+                      ) : (
+                        <Play className="h-3.5 w-3.5" strokeWidth={1.9} />
+                      )}
+                    </button>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+
+          <p
+            className={cn(
+              'mt-3 text-ui-sm',
+              preview.note?.kind === 'error' ? 'text-destructive' : 'text-muted-foreground',
+            )}
+          >
+            {preview.note ? preview.note.text : `Previews read: “${PREVIEW_LINE}”`}
           </p>
+
+          <div className="mt-4 flex items-start gap-2.5 border-t border-border/60 pt-4">
+            <Mic className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" strokeWidth={1.8} />
+            <div className="min-w-0 text-ui-sm">
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="font-medium text-foreground/90">Dictation — Whisper large v3</span>
+                {stt && (
+                  <span
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+                      stt.trying
+                        ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                        : 'bg-amber-500/10 text-amber-700 dark:text-amber-400',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'h-1.5 w-1.5 rounded-full',
+                        stt.trying ? 'bg-emerald-500' : 'bg-amber-500',
+                      )}
+                    />
+                    {stt.trying ? 'answering' : 'upstream outage'}
+                  </span>
+                )}
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {!stt || stt.trying
+                  ? 'NVIDIA’s Whisper large v3 transcribes whatever you say into the composer.'
+                  : `NVIDIA’s Whisper function is refusing requests at their end (${stt.lastError ?? 'HTTP 500'}). BODHA keeps asking it first — until NVIDIA restores it, Parakeet types your words so dictation never goes quiet. Nothing to change; it switches back by itself.`}
+              </p>
+            </div>
+          </div>
         </Section>
 
         {/* ── Appearance + account ───────────────────────────────────────── */}

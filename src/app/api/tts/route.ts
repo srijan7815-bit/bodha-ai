@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuthUser } from '@/lib/firebase/server-auth'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
-import { synthesize, type TtsProvider } from '@/lib/speech'
+import { chunkForSpeech, synthesize, type TtsProvider } from '@/lib/speech'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -39,13 +39,16 @@ export async function POST(req: NextRequest) {
   const language = typeof body?.language === 'string' ? body.language : 'en-US'
   if (!text) return NextResponse.json({ error: 'Nothing to read.' }, { status: 400 })
 
-  // Live Mode speaks one clip per sentence, so its budget is short — a long
-  // Fish stall there would be heard as dead air between sentences.
+  // The timeout is per piece, not per passage: long text is split into
+  // 320-character sentences and synthesised in parallel, so a four-minute-long
+  // answer still comes back inside one writer's read-aloud pause. Live Mode
+  // wants the faster voice and a shorter leash, because a stall there is heard
+  // as dead air.
   const audio = await synthesize(text, {
     voice,
     language,
     provider,
-    timeoutMs: provider === 'magpie' ? 10_000 : 20_000,
+    timeoutMs: provider === 'magpie' ? 15_000 : 25_000,
   })
   if (!audio) {
     return NextResponse.json(
@@ -60,6 +63,7 @@ export async function POST(req: NextRequest) {
       'Content-Length': String(audio.bytes.byteLength),
       'Cache-Control': 'no-store',
       'X-TTS-Provider': audio.provider,
+      'X-TTS-Pieces': String(chunkForSpeech(text).length),
     },
   })
 }

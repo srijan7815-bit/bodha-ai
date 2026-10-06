@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { attachMic, buildEnvelope, currentLevel, detachMic, resumeOrbAudio, setVoiceEnvelope, trackVoicePlayback } from '@/lib/orbAudio'
 import { toWav } from '@/lib/audio'
+import { chunkForSpeech } from '@/lib/speech-chunks'
 
 /**
  * Voice helpers.
@@ -11,6 +12,11 @@ import { toWav } from '@/lib/audio'
  * stay on the server and the browser never talks to a vendor directly. Two
  * rules keep it working:
  *
+ *   • Read-aloud is spoken a sentence or two at a time, not in one long take.
+ *     A full answer sent as a single request makes Fish Audio work for half a
+ *     minute before a student hears anything, and a timeout then loses the whole
+ *     passage; cut into 320-character pieces the first words arrive in about
+ *     two seconds and the rest synthesises while they are being listened to.
  *   • Playback always lives on the normal <audio> path. Nothing is ever routed
  *     through Web Audio, because a suspended graph makes an element silent —
  *     the animation would then be the reason nobody can hear BODHA. The
@@ -184,68 +190,104 @@ export function useSpeaker(): Speaker {
       // A gesture is on the stack (the student tapped), so this will stick.
       void resumeOrbAudio()
 
-      try {
-        const res = await fetch('/api/tts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, provider: opts?.provider ?? 'auto', voice: opts?.voice }),
-        })
-        if (res.ok) {
-          const bytes = await res.arrayBuffer()
-          if (bytes.byteLength > 1000) {
-            // Envelope for the orb — decoded separately, never routed through
-            // the audio element's own output.
-            void buildEnvelope(bytes).then(envelope => {
-              if (audioRef.current) setVoiceEnvelope(envelope)
-            })
-
-            const url = URL.createObjectURL(new Blob([bytes], { type: res.headers.get('content-type') || 'audio/mpeg' }))
-            urlRef.current = url
-            const audio = new Audio(url)
-            audio.preload = 'auto'
-            audio.crossOrigin = 'anonymous'
-            audioRef.current = audio
-
-            audio.onended = () => finish()
-            audio.onerror = () => {
-              // A codec the browser refuses: hand over to the device voice.
-              if (!finishedRef.current) {
-                teardown()
-                speakWithBrowser(text)
-              }
-            }
-
-            setSpeaking(true)
-            setUsingBrowserVoice(false)
-
-            const tick = () => {
-              const el = audioRef.current
-              if (!el) return
-              trackVoicePlayback(el.currentTime, !el.paused && !el.ended)
-              rafRef.current = requestAnimationFrame(tick)
-            }
-            rafRef.current = requestAnimationFrame(tick)
-
-            try {
-              await audio.play()
-            } catch {
-              // Autoplay refused (no gesture reached us) — the browser voice
-              // still speaks, because speechSynthesis is allowed after any tap.
-              if (!finishedRef.current) {
-                teardown()
-                speakWithBrowser(text)
-              }
-            }
-            return
-          }
-        } else {
-          console.warn('[voice] server TTS unavailable:', res.status)
-        }
-      } catch (err) {
-        console.warn('[voice] TTS request failed:', (err as Error).message)
+      const provider = opts?.provider ?? 'auto'
+      const voice = opts?.voice
+      // A short opening piece starts the voice sooner; the rest are cut longer
+      // and are fetched at the same time, so playback never waits for them.
+      const chunks = chunkForSpeech(text, 320, 140)
+      if (!chunks.length) {
+        finish()
+        return
       }
 
-      speakWithBrowser(text)
+      /** One piece of speech from the server, already turned into a playable URL. */
+      const fetchClip = async (chunk: string): Promise<{ url: string; bytes: ArrayBuffer } | null> => {
+        try {
+          const res = await fetch('/api/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: chunk, provider, voice }),
+          })
+          if (!res.ok) return null
+          const bytes = await res.arrayBuffer()
+          if (bytes.byteLength <= 1000) return null
+          const url = URL.createObjectURL(
+            new Blob([bytes], { type: res.headers.get('content-type') || 'audio/mpeg' }),
+          )
+          return { url, bytes }
+        } catch {
+          return null
+        }
+      }
+
+      /** Plays one clip to its end. False means this browser refused the audio. */
+      const playClip = (url: string) =>
+        new Promise<boolean>(resolve => {
+          const audio = new Audio(url)
+          audio.preload = 'auto'
+          audio.crossOrigin = 'anonymous'
+          audioRef.current = audio
+          urlRef.current = url
+          audio.onended = () => resolve(true)
+          audio.onerror = () => resolve(false)
+
+          const tick = () => {
+            const el = audioRef.current
+            if (!el) return
+            trackVoicePlayback(el.currentTime, !el.paused && !el.ended)
+            rafRef.current = requestAnimationFrame(tick)
+          }
+          rafRef.current = requestAnimationFrame(tick)
+          audio.play().catch(() => resolve(false))
+        })
+
+      /** The device voice, given whatever is still unspoken. */
+      const handOver = (from: number) => {
+        teardown()
+        speakWithBrowser(chunks.slice(from).join(' '))
+      }
+
+      setSpeaking(true)
+      setUsingBrowserVoice(false)
+
+      // Every piece is requested at once and played in order: Fish Audio
+      // answers these in parallel, so the opening sentence is speaking while the
+      // rest of the answer is still being generated.
+      const clips = chunks.map(chunk => fetchClip(chunk))
+      for (let index = 0; index < chunks.length; index += 1) {
+        const clip = await clips[index]
+        if (finishedRef.current) {
+          if (clip) URL.revokeObjectURL(clip.url)
+          return
+        }
+
+        if (!clip) {
+          // No server audio for this piece — the device voice reads the rest
+          // rather than leaving the answer half-spoken.
+          handOver(index)
+          return
+        }
+
+        if (index === 0) {
+          // Envelope for the orb — decoded separately, never routed through the
+          // audio element's own output.
+          void buildEnvelope(clip.bytes).then(envelope => {
+            if (audioRef.current) setVoiceEnvelope(envelope)
+          })
+        }
+
+        const played = await playClip(clip.url)
+        if (!played) {
+          handOver(index)
+          return
+        }
+        if (!finishedRef.current) {
+          URL.revokeObjectURL(clip.url)
+          if (urlRef.current === clip.url) urlRef.current = null
+        }
+      }
+
+      if (!finishedRef.current) finish()
     },
     [finish, speakWithBrowser, stop, teardown],
   )
