@@ -1,5 +1,7 @@
-# BODHA AI — local runtime data (file-store fallback)
-data/
+# BODHA AI — local runtime data (file-store fallback).
+# Anchored to the repo root on purpose: src/data/ holds the IKS corpus, which
+# is part of the app.
+/data/
 
 # dependencies
 node_modules/

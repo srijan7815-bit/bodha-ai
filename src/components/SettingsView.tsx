@@ -299,8 +299,8 @@ export default function SettingsView() {
 
   return (
     <div className="scrollbar-quiet h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-read px-4 pb-24 pt-6 md:px-6 md:pt-10">
-        <h1 className="font-serif text-[26px] leading-tight tracking-tight text-foreground">Settings</h1>
+      <div className="mx-auto w-full max-w-read px-4 pb-24 pt-6 sm:px-6 sm:pt-8 md:px-8">
+        <h1 className="font-display text-[1.65rem] font-semibold leading-tight tracking-[-0.02em] text-foreground sm:text-[1.8rem]">Settings</h1>
         <p className="mt-1.5 text-ui text-muted-foreground">
           Your account, your voice, and your own model.
         </p>

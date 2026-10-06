@@ -210,11 +210,12 @@ export class FileStore implements Store {
     content: string,
     toolCalls?: Message['toolCalls'],
     toolResults?: Message['toolResults'],
-    _ownerId?: string
+    _ownerId?: string,
+    sources?: Message['sources'],
   ): Promise<Message> {
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
-    const message: Message = { id, chatId, role, content, createdAt: now, toolCalls, toolResults }
+    const message: Message = { id, chatId, role, content, createdAt: now, toolCalls, toolResults, sources }
     this.data.messages.push(message)
 
     // Update chat's updatedAt

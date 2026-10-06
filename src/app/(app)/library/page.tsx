@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { BookOpen, CloudUpload, FileText, Loader2, MessageSquare, RefreshCw, ScanText, Trash2, TriangleAlert, UploadCloud } from 'lucide-react'
 import AppShell from '@/components/AppShell'
+import { PageFrame, PageHeader } from '@/components/Page'
 import { useAuth } from '@/components/AuthProvider'
-import { authFetch, getFirebaseIdToken } from '@/lib/firebase/client-token'
+import { authFetch } from '@/lib/firebase/client-token'
 import { cn } from '@/lib/utils'
 import { titleFromFilename } from '@/lib/slug'
 import { useDocumentScan } from '@/lib/ocr-client'
@@ -100,14 +101,12 @@ export default function LibraryPage() {
         form.append('kind', kindOf(file.name))
 
         // XHR so the student can actually see the upload move on a slow phone
-        // connection; the auth header matches authFetch for Firebase mode.
-        const token = await getFirebaseIdToken()
+        // connection. The session cookie travels with it (withCredentials).
         const { ok, status, body } = await new Promise<{ ok: boolean; status: number; body: { error?: string; ocrPending?: boolean } }>(
           resolve => {
             const xhr = new XMLHttpRequest()
             xhr.open('POST', '/api/documents')
             xhr.withCredentials = true
-            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
             xhr.upload.onprogress = e => {
               if (!e.lengthComputable) return
               const pct = Math.round((e.loaded / e.total) * 74)
@@ -155,15 +154,11 @@ export default function LibraryPage() {
 
   return (
     <AppShell>
-      <div className="scrollbar-quiet h-full overflow-y-auto">
-        <div className="mx-auto w-full max-w-4xl px-4 pb-20 pt-8 md:px-8">
-          <header className="mb-7">
-            <h1 className="font-display text-[1.65rem] font-semibold tracking-[-0.02em] text-foreground">Library</h1>
-            <p className="mt-1.5 font-serif text-reading text-muted-foreground text-pretty">
-              Upload your books and notes. BODHA reads them, answers from their pages, and can read them with you in
-              the page-turn reader.
-            </p>
-          </header>
+      <PageFrame width="wide">
+          <PageHeader
+            title="Library"
+            description="Upload your books and notes. BODHA reads them, answers from their pages, and can read them with you in the page-turn reader."
+          />
 
           {/* Upload */}
           <div
@@ -333,8 +328,7 @@ export default function LibraryPage() {
               )
             })}
           </ul>
-        </div>
-      </div>
+      </PageFrame>
     </AppShell>
   )
 }

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
-import { BookOpen, Boxes, LogOut, Menu, MessageSquare, Moon, MoreHorizontal, Plus, Search, Settings, Sun, Trash2, X } from 'lucide-react'
+import { BookMarked, BookOpen, Boxes, LogOut, Menu, MessageSquare, Moon, MoreHorizontal, Plus, Search, Settings, Sun, Trash2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/components/AuthProvider'
 import { BodhaMark, BodhaWordmark } from '@/components/Brand'
@@ -27,6 +27,7 @@ export function announceChatsChanged() {
 const NAV = [
   { href: '/chat', label: 'Chat', icon: MessageSquare },
   { href: '/library', label: 'Library', icon: BookOpen },
+  { href: '/iks', label: 'Shelf', icon: BookMarked },
   { href: '/sandbox', label: 'Sandbox', icon: Boxes },
 ]
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
+import { retrieveForQuestion } from '@/lib/iks'
 import { getAuthUser } from '@/lib/firebase/server-auth'
 import { getStore } from '@/lib/store'
 import { streamTutorReply } from '@/lib/ai'
@@ -112,6 +113,14 @@ export async function POST(req: NextRequest, { params }: Params) {
     document = await store.getDocument(chat.documentId, user.id).catch(() => null)
   }
 
+  // Read the Indian Knowledge Systems shelf for this question. Retrieved once,
+  // before the model is called, so the answer can be grounded *and* attributed:
+  // the same passages go into the prompt and onto the saved message.
+  const question = isRegenerate
+    ? ([...history].reverse().find(m => m.role === 'user')?.content ?? '')
+    : (parsed.data.content ?? '')
+  const shelf = await retrieveForQuestion(question)
+
   const encoder = new TextEncoder()
   const abortCtl = new AbortController()
   req.signal.addEventListener('abort', () => abortCtl.abort())
@@ -129,7 +138,8 @@ export async function POST(req: NextRequest, { params }: Params) {
       let full = ''
       try {
         if (!isRegenerate) send({ t: 'user', message: userMessage })
-        for await (const chunk of streamTutorReply({ history, document, preferred }, abortCtl.signal)) {
+        if (!isRegenerate && shelf.sources.length) send({ t: 'sources', items: shelf.sources })
+        for await (const chunk of streamTutorReply({ history, document, preferred, iksContext: shelf.context }, abortCtl.signal)) {
           if (chunk.kind === 'delta') {
             full += chunk.text
             send({ t: 'delta', v: chunk.text })
@@ -148,7 +158,15 @@ export async function POST(req: NextRequest, { params }: Params) {
       // Persist whatever BODHA managed to say (even partial, if content arrived)
       if (full.trim()) {
         try {
-          const assistantMessage = await store.createMessage(id, 'assistant', full, undefined, undefined, user.id)
+          const assistantMessage = await store.createMessage(
+            id,
+            'assistant',
+            full,
+            undefined,
+            undefined,
+            user.id,
+            shelf.sources.length ? shelf.sources : undefined,
+          )
           send({ t: 'done', message: assistantMessage })
         } catch {
           send({ t: 'done', message: null })

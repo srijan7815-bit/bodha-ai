@@ -35,6 +35,8 @@ export interface TutorContext {
    * say which model did, so nobody wonders why their model sounded different.
    */
   preferred?: ProviderConfig[]
+  /** Retrieved passages from the IKS shelf, already formatted for the prompt. */
+  iksContext?: string | null
 }
 
 const PRETTY: Record<string, string> = {
@@ -64,6 +66,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
   const messages: TutorMessage[] = buildSystemMessages({
     documentTitle: ctx.document?.title,
     documentText: ctx.document?.textContent,
+    iksContext: ctx.iksContext,
   })
 
   const recent = ctx.history.slice(-HISTORY_LIMIT)

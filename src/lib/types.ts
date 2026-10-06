@@ -2,6 +2,19 @@
 
 export type MessageRole = 'user' | 'assistant' | 'system'
 
+/** A passage from the IKS shelf that an answer was built on. */
+export interface MessageSource {
+  /** The number the answer cites: [1], [2]. */
+  id: string
+  workId: string
+  title: string
+  ref: string
+  translator: string
+  year: number
+  sourceUrl: string
+  excerpt: string
+}
+
 export interface Message {
   id: string
   chatId: string
@@ -11,6 +24,8 @@ export interface Message {
   // Optional metadata for tool calls
   toolCalls?: ToolCall[]
   toolResults?: ToolResult[]
+  /** Which passages of the IKS shelf this answer was grounded in. */
+  sources?: MessageSource[]
 }
 
 export interface ToolCall {
@@ -180,7 +195,7 @@ export interface Store {
   deleteChat(id: string, ownerId?: string): Promise<void>
 
   // Messages
-  createMessage(chatId: string, role: MessageRole, content: string, toolCalls?: ToolCall[], toolResults?: ToolResult[], ownerId?: string): Promise<Message>
+  createMessage(chatId: string, role: MessageRole, content: string, toolCalls?: ToolCall[], toolResults?: ToolResult[], ownerId?: string, sources?: MessageSource[]): Promise<Message>
   listMessages(chatId: string, ownerId?: string): Promise<Message[]>
   deleteMessage(id: string, ownerId?: string, chatId?: string): Promise<void>
 

@@ -268,6 +268,7 @@ export class FirebaseStore implements Store {
       createdAt: toISO(data.createdAt),
       toolCalls: data.toolCalls ?? undefined,
       toolResults: data.toolResults ?? undefined,
+      sources: Array.isArray(data.sources) ? data.sources : undefined,
     }
   }
 
@@ -278,6 +279,7 @@ export class FirebaseStore implements Store {
     toolCalls?: Message['toolCalls'],
     toolResults?: Message['toolResults'],
     ownerId?: string,
+    sources?: Message['sources'],
   ): Promise<Message> {
     if (!ownerId) throw new Error('ownerId is required in Firebase mode')
     const admin = await this.admin()
@@ -290,6 +292,7 @@ export class FirebaseStore implements Store {
       createdAt: now,
       toolCalls: toolCalls ?? null,
       toolResults: toolResults ?? null,
+      sources: sources ?? null,
     })
     await chatRef.update({ updatedAt: now })
     return {
@@ -300,6 +303,7 @@ export class FirebaseStore implements Store {
       createdAt: now.toISOString(),
       toolCalls: toolCalls ?? undefined,
       toolResults: toolResults ?? undefined,
+      sources: sources ?? undefined,
     }
   }
 

@@ -4,46 +4,21 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, Eye, EyeOff, Loader2 } from 'lucide-react'
-import { auth } from '@/lib/firebase/client'
 import { BodhaWordmark } from '@/components/Brand'
 
 /**
  * Shared sign-in / create-account form.
  *
- * The httpOnly cookie session from /api/auth/* is the source of truth (it works
- * in the local file-store demo *and* against Firestore on Vercel). Google
- * sign-in is offered only when the server reports that Firebase Authentication
- * is actually enabled, because an unconfigured project makes every Firebase
- * sign-in call fail with auth/configuration-not-found.
+ * BODHA keeps one way in: an email address and a password, against our own
+ * /api/auth/* routes, which set an httpOnly session cookie. There is no third
+ * party in the sign-in path — no external identity provider to redirect to, no
+ * popup, and no account data leaving the app.
  */
 
 type Mode = 'login' | 'register'
 
 interface Props {
   mode: Mode
-}
-
-const FIREBASE_ERROR_MESSAGES: Record<string, string> = {
-  'auth/email-already-in-use': 'That email already has an account — sign in instead.',
-  'auth/invalid-email': 'That email address does not look right.',
-  'auth/weak-password': 'Please use a password of at least 6 characters.',
-  'auth/user-not-found': 'That email or password is not right.',
-  'auth/wrong-password': 'That email or password is not right.',
-  'auth/invalid-credential': 'That email or password is not right.',
-  'auth/too-many-requests': 'Too many attempts — please try again in a few minutes.',
-  'auth/network-request-failed': 'Could not reach Firebase. Check your connection.',
-  'auth/popup-closed-by-user': 'The sign-in window was closed before finishing.',
-  'auth/popup-blocked': 'Your browser blocked the sign-in window. Allow popups and retry.',
-  'auth/unauthorized-domain': 'This domain is not authorised for Google sign-in yet. Use email and password instead.',
-  'auth/operation-not-allowed': 'Google sign-in is not enabled for this project yet. Use email and password instead.',
-  'auth/configuration-not-found': 'Firebase sign-in is not enabled for this project yet. Use email and password instead.',
-}
-
-function friendlyFirebaseError(err: unknown): string {
-  const code = (err as { code?: string })?.code
-  if (code && FIREBASE_ERROR_MESSAGES[code]) return FIREBASE_ERROR_MESSAGES[code]
-  const message = (err as Error)?.message
-  return message ? `Sign-in failed: ${message}` : 'Sign-in failed. Please try again.'
 }
 
 function Field({
@@ -82,19 +57,17 @@ export default function AuthForm({ mode }: Props) {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [googleBusy, setGoogleBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [firebaseAuth, setFirebaseAuth] = useState(false)
   const [demoMode, setDemoMode] = useState(false)
 
-  // Ask the server what this deployment supports.
+  // Ask the server what this deployment is running on, so the demo hint only
+  // appears where a demo account actually exists.
   useEffect(() => {
     let cancelled = false
     fetch('/api/auth/me', { cache: 'no-store' })
       .then(res => (res.ok ? res.json() : null))
       .then(data => {
         if (cancelled || !data) return
-        setFirebaseAuth(!!data.firebaseAuth)
         setDemoMode(data.store === 'file')
       })
       .catch(() => {})
@@ -134,40 +107,6 @@ export default function AuthForm({ mode }: Props) {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
       setBusy(false)
-    }
-  }
-
-  async function signInWithGoogle() {
-    if (googleBusy || busy) return
-    if (!auth) {
-      setError('Google sign-in is not available in this deployment.')
-      return
-    }
-    setError(null)
-    setGoogleBusy(true)
-    try {
-      const { GoogleAuthProvider, signInWithPopup } = await import('firebase/auth')
-      const credential = await signInWithPopup(auth, new GoogleAuthProvider())
-      const idToken = await credential.user.getIdToken()
-      const res = await fetch('/api/auth/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
-        body: JSON.stringify({
-          name: credential.user.displayName?.trim() || credential.user.email?.split('@')[0] || 'Student',
-          email: (credential.user.email ?? '').toLowerCase(),
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        setError(data.error || 'Google sign-in could not be completed.')
-        return
-      }
-      router.replace('/chat')
-      router.refresh()
-    } catch (err) {
-      setError(friendlyFirebaseError(err))
-    } finally {
-      setGoogleBusy(false)
     }
   }
 
@@ -265,25 +204,6 @@ export default function AuthForm({ mode }: Props) {
             </button>
           </form>
 
-          {firebaseAuth && (
-            <>
-              <div className="my-5 flex items-center gap-3">
-                <span className="h-px flex-1 bg-border" />
-                <span className="text-ui-xs uppercase tracking-[0.14em] text-muted-foreground">or</span>
-                <span className="h-px flex-1 bg-border" />
-              </div>
-              <button
-                type="button"
-                onClick={signInWithGoogle}
-                disabled={googleBusy || busy}
-                className="inline-flex h-11 w-full items-center justify-center gap-2.5 rounded-full border border-border/80 bg-background text-[15px] font-medium text-foreground transition-colors hover:border-primary/40 disabled:opacity-60"
-              >
-                {googleBusy ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} /> : <GoogleMark />}
-                Continue with Google
-              </button>
-            </>
-          )}
-
           <p className="mt-6 text-center text-ui text-muted-foreground">
             {isRegister ? 'Already have an account? ' : 'New to बोध? '}
             <Link href={isRegister ? '/login' : '/register'} className="font-medium text-primary underline-offset-4 hover:underline">
@@ -304,25 +224,5 @@ export default function AuthForm({ mode }: Props) {
         </p>
       </div>
     </main>
-  )
-}
-
-function GoogleMark() {
-  return (
-    <svg className="h-[18px] w-[18px]" viewBox="0 0 24 24" aria-hidden>
-      <path
-        fill="#4285F4"
-        d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.4a5.5 5.5 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.6-5.2 3.6-8.8z"
-      />
-      <path
-        fill="#34A853"
-        d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1.1.7-2.4 1.2-4 1.2-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24z"
-      />
-      <path fill="#FBBC05" d="M5.4 14.4a7.2 7.2 0 0 1 0-4.6V6.7H1.4a12 12 0 0 0 0 10.8l4-3.1z" />
-      <path
-        fill="#EA4335"
-        d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.4 6.7l4 3.1C6.3 6.9 8.9 4.8 12 4.8z"
-      />
-    </svg>
   )
 }

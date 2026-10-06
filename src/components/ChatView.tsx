@@ -17,7 +17,8 @@ import { activeModel, toggleOptions, useSettings } from '@/lib/settings-client'
 import { resumeOrbAudio } from '@/lib/orbAudio'
 import DocPicker from '@/components/DocPicker'
 import { announceChatsChanged } from '@/components/AppShell'
-import type { Chat, DocumentMeta, Message } from '@/lib/types'
+import { Sources } from '@/components/Sources'
+import type { Chat, DocumentMeta, Message, MessageSource } from '@/lib/types'
 
 interface ChatViewProps {
   chat: Chat | null
@@ -51,6 +52,8 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   const [draft, setDraft] = useState('')
   const [streaming, setStreaming] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
+  /** Citations for the answer currently streaming in. */
+  const [liveSources, setLiveSources] = useState<MessageSource[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [doc, setDoc] = useState<DocumentMeta | null>(documentMeta)
@@ -206,14 +209,22 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
 
           for (const line of lines) {
             if (!line.trim()) continue
-            let frame: { t: string; v?: string; message?: Message | null; errorMessage?: string }
+            let frame: {
+              t: string
+              v?: string
+              message?: Message | null
+              errorMessage?: string
+              items?: MessageSource[]
+            }
             try {
               frame = JSON.parse(line)
             } catch {
               continue
             }
 
-            if (frame.t === 'user' && frame.message) {
+            if (frame.t === 'sources') {
+            setLiveSources(frame.items ?? [])
+          } else if (frame.t === 'user' && frame.message) {
               const persisted = frame.message
               setMessages(prev => {
                 const idx = optimistic ? prev.findIndex(m => m.id === optimistic.id) : -1
@@ -222,6 +233,8 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
                 next[idx] = persisted
                 return next
               })
+            } else if (frame.t === 'sources' && frame.items) {
+              setLiveSources(frame.items)
             } else if (frame.t === 'delta' && frame.v) {
               streamed += frame.v
               setStreaming(streamed)
@@ -233,6 +246,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
                 setMessages(prev => [...prev, finished])
               }
               setStreaming('')
+              setLiveSources([])
             } else if (frame.t === 'error') {
               if (frame.errorMessage) setError(frame.errorMessage)
             }
@@ -357,14 +371,22 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
 
         for (const line of lines) {
           if (!line.trim()) continue
-          let frame: { t: string; v?: string; message?: Message | null; errorMessage?: string }
+          let frame: {
+            t: string
+            v?: string
+            message?: Message | null
+            errorMessage?: string
+            items?: MessageSource[]
+          }
           try {
             frame = JSON.parse(line)
           } catch {
             continue
           }
 
-          if (frame.t === 'user' && frame.message) {
+          if (frame.t === 'sources') {
+            setLiveSources(frame.items ?? [])
+          } else if (frame.t === 'user' && frame.message) {
             const persisted = frame.message
             setMessages(prev => {
               const index = prev.findIndex(m => m.id === optimistic.id)
@@ -505,6 +527,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
                     ) : (
                       <AssistantMessage
                         content={message.content}
+                        sources={message.sources}
                         onRun={(lang, code) => setRunCode({ lang, code })}
                         speaking={readingId === message.id && speaker.speaking}
                         onSpeak={() => speak(message)}
@@ -527,6 +550,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
                 <div className="animate-fade-in">
                   <Markdown content={streaming} onRun={(lang, code) => setRunCode({ lang, code })} />
                   <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-[2px] animate-blink-caret rounded-sm bg-primary align-middle" />
+                  {liveSources.length > 0 && <Sources sources={liveSources} />}
                 </div>
               )}
 
@@ -644,6 +668,7 @@ function UserMessage({ content }: { content: string }) {
 
 function AssistantMessage({
   content,
+  sources,
   speaking,
   onSpeak,
   onRegenerate,
@@ -651,6 +676,7 @@ function AssistantMessage({
   onRun,
 }: {
   content: string
+  sources?: MessageSource[]
   speaking: boolean
   onSpeak: () => void
   onRegenerate?: () => void
@@ -691,6 +717,7 @@ function AssistantMessage({
           )}
         </div>
       )}
+      {sources && sources.length > 0 && <Sources sources={sources} />}
     </div>
   )
 }
