@@ -15,19 +15,33 @@ export async function GET(req: NextRequest, { params }: Params) {
   const user = await getAuthUser(req)
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
 
+  const wantMeta = req.nextUrl.searchParams.get('meta') === '1'
   const store = await getStore()
-  const doc = await store.getDocument(id, user.id)
+  const doc = await store.getDocument(id, user.id, { content: !wantMeta })
   if (!doc || doc.userId !== user.id) {
     return NextResponse.json({ error: 'Document not found' }, { status: 404 })
   }
 
-  const wantMeta = req.nextUrl.searchParams.get('meta') === '1'
   if (wantMeta) {
     const { content, ...meta } = doc
     return NextResponse.json({ document: { ...meta, textContent: doc.textContent } })
   }
 
-  const body = new Uint8Array(doc.content)
+  // Streamed in slices: a buffered response over ~4.5 MB is refused by the
+  // hosting platform, a streamed one is not — this is what lets a 30 MB book open.
+  const bytes = new Uint8Array(doc.content)
+  const SLICE = 256 * 1024
+  let offset = 0
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.length) {
+        controller.close()
+        return
+      }
+      controller.enqueue(bytes.subarray(offset, offset + SLICE))
+      offset += SLICE
+    },
+  })
   return new Response(body, {
     headers: {
       'Content-Type': doc.mime || 'application/octet-stream',
@@ -46,7 +60,7 @@ export async function DELETE(req: NextRequest, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
 
   const store = await getStore()
-  const doc = await store.getDocument(id, user.id)
+  const doc = await store.getDocument(id, user.id, { content: false })
   if (!doc || doc.userId !== user.id) {
     return NextResponse.json({ error: 'Document not found' }, { status: 404 })
   }

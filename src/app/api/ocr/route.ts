@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
   if (typeof documentId === 'string' && documentId.trim()) {
     try {
       const store = await getStore()
-      const doc = await store.getDocument(documentId, user.id)
+      const doc = await store.getDocument(documentId, user.id, { content: false })
       if (doc && doc.userId === user.id) {
         const divider = doc.textContent.trim() ? '\n\n' : ''
         if (!doc.textContent.includes(text.slice(0, 200))) {

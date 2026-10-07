@@ -10,11 +10,10 @@ import { authFetch } from '@/lib/firebase/client-token'
 import { cn } from '@/lib/utils'
 import { titleFromFilename } from '@/lib/slug'
 import { useDocumentScan } from '@/lib/ocr-client'
+import { SINGLE_REQUEST_MAX, uploadInParts } from '@/lib/upload-client'
 import type { DocumentMeta } from '@/lib/types'
 
 const ACCEPT = '.pdf,.txt,.md,.markdown,.csv,.json,.html,.js,.ts,.py,.java,.c,.cpp,.css,.png,.jpg,.jpeg'
-/** The server caps a single upload at 4 MB; keep the two in step. */
-const MAX_UPLOAD = 4 * 1024 * 1024
 
 const KIND_LABEL: Record<string, string> = { pdf: 'PDF', text: 'Text', markdown: 'Notes', code: 'Code' }
 
@@ -86,15 +85,21 @@ export default function LibraryPage() {
   const upload = useCallback(
     async (file: File) => {
       setError(null)
-      if (file.size > MAX_UPLOAD) {
-        setError(`“${file.name}” is larger than 4 MB. Try compressing it, or upload the book as chapters — one at a time.`)
-        return
-      }
-
       const title = titleFromFilename(file.name)
       setUploading({ name: file.name, progress: 5, stage: 'Uploading…' })
 
       try {
+        // Big books travel in 3 MB pieces; small files in one request.
+        let big: { ok: boolean; error?: string; ocrPending?: boolean } | null = null
+        if (file.size > SINGLE_REQUEST_MAX) {
+          big = await uploadInParts(file, title, fraction => {
+            setUploading(current =>
+              current ? { ...current, progress: Math.max(5, Math.round(fraction * 74)), stage: 'Uploading…' } : current,
+            )
+          })
+          setUploading(current => (current ? { ...current, progress: 78, stage: 'Reading the book…' } : current))
+        }
+
         const form = new FormData()
         form.append('file', file)
         form.append('title', title)
@@ -102,7 +107,9 @@ export default function LibraryPage() {
 
         // XHR so the student can actually see the upload move on a slow phone
         // connection. The session cookie travels with it (withCredentials).
-        const { ok, status, body } = await new Promise<{ ok: boolean; status: number; body: { error?: string; ocrPending?: boolean } }>(
+        const { ok, status, body } = big
+          ? { ok: big.ok, status: big.ok ? 200 : 400, body: { error: big.error, ocrPending: big.ocrPending } }
+          : await new Promise<{ ok: boolean; status: number; body: { error?: string; ocrPending?: boolean } }>(
           resolve => {
             const xhr = new XMLHttpRequest()
             xhr.open('POST', '/api/documents')
@@ -203,7 +210,7 @@ export default function LibraryPage() {
                 <CloudUpload className="mx-auto mb-3 h-6 w-6 text-primary/80" strokeWidth={1.6} />
                 <p className="text-ui font-medium text-foreground">Drop a file here, or choose one</p>
                 <p className="mx-auto mt-1 max-w-[38ch] font-serif text-reading-sm text-muted-foreground">
-                  PDF (including scans), a photo of a page, notes and code. Up to 4 MB per file — chapters work best.
+                  PDF (including scans), a photo of a page, notes and code. Big books are fine — they upload in pieces.
                 </p>
                 <button
                   type="button"

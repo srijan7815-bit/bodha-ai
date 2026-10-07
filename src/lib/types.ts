@@ -202,7 +202,12 @@ export interface Store {
   // Documents
   createDocument(doc: DocumentRecord): Promise<DocumentMeta>
   listDocuments(userId: string): Promise<DocumentMeta[]>
-  getDocument(id: string, ownerId?: string): Promise<DocumentRecord | null>
+  /** `content: false` skips reading the raw file parts (metadata + text only). */
+  getDocument(id: string, ownerId?: string, opts?: { content?: boolean }): Promise<DocumentRecord | null>
+  /** Large uploads arrive in parts; each is parked here until the last one lands. */
+  saveUploadPart(userId: string, uploadId: string, index: number, bytes: Buffer): Promise<void>
+  /** Joins the parts of an upload in order and deletes them. Null if any part is missing. */
+  takeUpload(userId: string, uploadId: string, total: number): Promise<Buffer | null>
   deleteDocument(id: string, ownerId?: string): Promise<void>
   /** Merge/replace a document's extracted text (OCR flow). */
   updateDocumentText(id: string, ownerId: string, text: string): Promise<void>

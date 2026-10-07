@@ -267,7 +267,29 @@ export class FileStore implements Store {
       }))
   }
 
-  async getDocument(id: string, _ownerId?: string): Promise<DocumentRecord | null> {
+  private uploadDir(userId: string, uploadId: string) {
+    return join(this.dir, 'uploads', userId.replace(/[^\w-]/g, '_'), uploadId.replace(/[^\w-]/g, '_'))
+  }
+
+  async saveUploadPart(userId: string, uploadId: string, index: number, bytes: Buffer): Promise<void> {
+    const dir = this.uploadDir(userId, uploadId)
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(join(dir, `${String(index).padStart(4, '0')}.part`), bytes)
+  }
+
+  async takeUpload(userId: string, uploadId: string, total: number): Promise<Buffer | null> {
+    const dir = this.uploadDir(userId, uploadId)
+    const parts: Buffer[] = []
+    try {
+      for (let i = 0; i < total; i++) parts.push(await fs.readFile(join(dir, `${String(i).padStart(4, '0')}.part`)))
+    } catch {
+      return null
+    }
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+    return Buffer.concat(parts)
+  }
+
+  async getDocument(id: string, _ownerId?: string, _opts?: { content?: boolean }): Promise<DocumentRecord | null> {
     return this.data.documents.find(d => d.id === id) ?? null
   }
 

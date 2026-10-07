@@ -359,7 +359,9 @@ export class FirebaseStore implements Store {
       const part = content.subarray(i * CHUNK_BYTES, Math.min((i + 1) * CHUNK_BYTES, content.length))
       batch.set(ref.collection('chunks').doc(String(i).padStart(4, '0')), { index: i, bytes: Buffer.from(part) })
       pending += 1
-      if (pending === 400) {
+      // A Firestore commit is capped near 10 MiB, so flush every few parts
+      // rather than every 400 documents.
+      if (pending === 8) {
         await batch.commit()
         batch = admin.db.batch()
         pending = 0
@@ -380,6 +382,45 @@ export class FirebaseStore implements Store {
       return Buffer.alloc(0)
     })
     return Buffer.concat(parts)
+  }
+
+  private uploadRef(admin: AdminServices, userId: string, uploadId: string) {
+    return admin.db.collection('users').doc(userId).collection('uploads').doc(uploadId)
+  }
+
+  async saveUploadPart(userId: string, uploadId: string, index: number, bytes: Buffer): Promise<void> {
+    const admin = await this.admin()
+    const ref = this.uploadRef(admin, userId, uploadId)
+    // One 3 MB part becomes a few sub-700 KB documents; ids sort in order.
+    const pieces = Math.max(1, Math.ceil(bytes.length / CHUNK_BYTES))
+    let batch = admin.db.batch()
+    for (let i = 0; i < pieces; i++) {
+      const piece = bytes.subarray(i * CHUNK_BYTES, Math.min((i + 1) * CHUNK_BYTES, bytes.length))
+      const id = `${String(index).padStart(4, '0')}_${String(i).padStart(2, '0')}`
+      batch.set(ref.collection('parts').doc(id), { bytes: Buffer.from(piece) })
+    }
+    await batch.commit()
+  }
+
+  async takeUpload(userId: string, uploadId: string, total: number): Promise<Buffer | null> {
+    const admin = await this.admin()
+    const ref = this.uploadRef(admin, userId, uploadId)
+    const snap = await ref.collection('parts').get()
+    if (snap.empty) return null
+    const seen = new Set(snap.docs.map(d => Number(d.id.split('_')[0])))
+    for (let i = 0; i < total; i++) if (!seen.has(i)) return null
+    // Document ids are zero-padded, so sorting them restores the file order.
+    const docs = [...snap.docs].sort((a, b) => (a.id < b.id ? -1 : 1))
+    const buffer = Buffer.concat(
+      docs.map(d => {
+        const raw = d.data().bytes
+        if (Buffer.isBuffer(raw)) return raw as Buffer
+        if (raw && typeof raw === 'object' && 'value' in raw) return Buffer.from((raw as { value: string }).value, 'base64')
+        return Buffer.alloc(0)
+      }),
+    )
+    await admin.db.recursiveDelete(ref).catch(() => {})
+    return buffer
   }
 
   async createDocument(doc: DocumentRecord): Promise<DocumentMeta> {
@@ -423,7 +464,7 @@ export class FirebaseStore implements Store {
     return snap.docs.map((d: FsSnapDoc) => this.mapDocMeta(d.id, d.data()))
   }
 
-  async getDocument(id: string, ownerId?: string): Promise<DocumentRecord | null> {
+  async getDocument(id: string, ownerId?: string, opts?: { content?: boolean }): Promise<DocumentRecord | null> {
     if (!ownerId) return null
     const admin = await this.admin()
     const doc = await this.dbDocuments(admin, ownerId).doc(id).get()
@@ -433,7 +474,7 @@ export class FirebaseStore implements Store {
 
     let content: Buffer = Buffer.alloc(0)
     try {
-      content = await this.readChunks(admin, ownerId, id)
+      if (opts?.content !== false) content = await this.readChunks(admin, ownerId, id)
     } catch (err) {
       console.warn('[store] Reading the uploaded file failed:', (err as Error).message)
     }

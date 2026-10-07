@@ -112,7 +112,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   const history = await store.listMessages(id, user.id)
   let document = null
   if (chat.documentId) {
-    document = await store.getDocument(chat.documentId, user.id).catch(() => null)
+    document = await store.getDocument(chat.documentId, user.id, { content: false }).catch(() => null)
   }
 
   // Read the Indian Knowledge Systems shelf for this question. Retrieved once,
