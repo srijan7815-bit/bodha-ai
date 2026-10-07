@@ -152,7 +152,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   }, [])
 
   useLayoutEffect(() => {
-    if (atBottom) scrollToBottom(messages.length > 2 ? 'smooth' : 'auto')
+    if (atBottom) scrollToBottom(streaming || messages.length <= 2 ? 'auto' : 'smooth')
   }, [messages, streaming, atBottom, scrollToBottom])
 
   useEffect(() => {
@@ -180,6 +180,27 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
       const controller = new AbortController()
       abortRef.current = controller
       let streamed = ''
+
+      // Re-parsing Markdown + KaTeX + syntax highlighting for every token is
+      // what made long answers stutter. Render at most ~14 times a second;
+      // the text itself is never held back, only how often it is painted.
+      let lastPaint = 0
+      let paintTimer: ReturnType<typeof setTimeout> | null = null
+      const paint = () => {
+        paintTimer = null
+        lastPaint = performance.now()
+        setStreaming(streamed)
+      }
+      const scheduleStream = () => {
+        if (paintTimer) return
+        const wait = Math.max(0, 70 - (performance.now() - lastPaint))
+        paintTimer = setTimeout(paint, wait)
+      }
+      const cancelStream = () => {
+        if (paintTimer) clearTimeout(paintTimer)
+        paintTimer = null
+      }
+
 
       try {
         const res = await authFetch(`/api/chats/${targetChatId}/messages`, {
@@ -237,10 +258,11 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
               setLiveSources(frame.items)
             } else if (frame.t === 'delta' && frame.v) {
               streamed += frame.v
-              setStreaming(streamed)
+              scheduleStream()
             } else if (frame.t === 'notice' && frame.v) {
               setNotice(frame.v)
             } else if (frame.t === 'done') {
+              cancelStream()
               if (frame.message) {
                 const finished = frame.message as Message
                 setMessages(prev => [...prev, finished])
@@ -258,6 +280,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
           setError('The connection dropped. Your message is saved — try again.')
         }
       } finally {
+        cancelStream()
         if (streamed.trim()) setStreaming('')
         setBusy(false)
         abortRef.current = null
@@ -352,7 +375,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
       const res = await authFetch(`/api/chats/${targetId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: clean, model }),
+        body: JSON.stringify({ content: clean, model, live: true }),
         signal,
       })
       if (!res.ok || !res.body) throw new Error('The connection dropped mid-answer.')

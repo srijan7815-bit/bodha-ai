@@ -494,7 +494,6 @@ export function useDictation(onFinal: (text: string) => void): Dictation {
 
           const form = new FormData()
           form.append('audio', payload, filename)
-          form.append('language', (navigator.language || 'en').split('-')[0])
           const res = await fetch('/api/stt', { method: 'POST', body: form })
           const data = await res.json().catch(() => ({}))
           if (res.ok && typeof data.text === 'string' && data.text.trim()) {

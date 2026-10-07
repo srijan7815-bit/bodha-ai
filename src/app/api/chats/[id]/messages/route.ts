@@ -24,6 +24,8 @@ const bodySchema = z
      * the student's connected models.
      */
     model: z.string().trim().max(120).optional(),
+    /** Live Mode: the reply is spoken aloud, so keep it short and Markdown-free. */
+    live: z.boolean().optional(),
   })
   .refine(b => b.regenerate === true || (typeof b.content === 'string' && b.content.length > 0), {
     message: 'Message is empty',
@@ -139,7 +141,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       try {
         if (!isRegenerate) send({ t: 'user', message: userMessage })
         if (!isRegenerate && shelf.sources.length) send({ t: 'sources', items: shelf.sources })
-        for await (const chunk of streamTutorReply({ history, document, preferred, iksContext: shelf.context }, abortCtl.signal)) {
+        for await (const chunk of streamTutorReply({ history, document, preferred, iksContext: shelf.context, live: parsed.data.live }, abortCtl.signal)) {
           if (chunk.kind === 'delta') {
             full += chunk.text
             send({ t: 'delta', v: chunk.text })

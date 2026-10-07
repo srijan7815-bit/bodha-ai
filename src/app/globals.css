@@ -382,3 +382,122 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ─── Tactile interaction layer ──────────────────────────────────────────────
+   Every button, tab and menu item gets the same quick, springy press so the
+   app feels like one product. Uses the individual `scale` / `translate`
+   properties, which compose with Tailwind's `transform` utilities instead of
+   fighting them. The transition-property list is !important on purpose: many
+   components set `transition-colors`, which would otherwise exclude `scale`
+   and make a press snap instead of ease.                                    */
+
+button:not(:disabled),
+[role='button'],
+[role='tab'],
+[role='menuitem'],
+summary {
+  transition-property: color, background-color, border-color, opacity, box-shadow, scale, translate, filter !important;
+  transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+  transition-duration: 180ms;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button:not(:disabled):active,
+[role='button']:active,
+[role='tab']:active,
+[role='menuitem']:active {
+  scale: 0.97;
+  transition-duration: 70ms;
+}
+
+/* Round icon buttons and pills are small targets — let them press deeper. */
+button.rounded-full:not(:disabled):active,
+button[class*='h-8 w-8']:active,
+button[class*='h-9 w-9']:active,
+button[class*='h-10 w-10']:active {
+  scale: 0.92;
+}
+
+@media (hover: hover) {
+  button.bg-primary:not(:disabled):hover {
+    translate: 0 -1px;
+    box-shadow: 0 6px 16px -6px rgb(var(--primary) / 0.55);
+  }
+  button.bg-primary:not(:disabled):active {
+    translate: 0 0;
+    box-shadow: none;
+  }
+}
+
+/* A disabled button should look settled, not dead. */
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* ─── Layout steadiness ──────────────────────────────────────────────────────
+   Phones resize the viewport as the address bar slides away; dynamic units and
+   a stable scrollbar gutter stop panels from jumping or overlapping.        */
+
+html {
+  scrollbar-gutter: stable;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100dvh;
+}
+
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+/* Long words, URLs and Devanagari never push a bubble past the screen edge. */
+.prose,
+[class*='prose'] {
+  overflow-wrap: anywhere;
+}
+
+pre {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Streaming answers fade in softly instead of popping. */
+@keyframes bodha-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .animate-fade-in {
+    animation: bodha-rise 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button:not(:disabled),
+  [role='button'],
+  [role='tab'],
+  [role='menuitem'] {
+    transition-duration: 1ms !important;
+  }
+  button:not(:disabled):active,
+  [role='button']:active {
+    scale: 1;
+  }
+  * {
+    scroll-behavior: auto !important;
+  }
+}

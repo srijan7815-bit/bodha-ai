@@ -87,9 +87,9 @@ export default function SettingsView() {
     let alive = true
     void fetch('/api/health')
       .then(res => res.json())
-      .then((data: { speech?: { stt?: { primaryTrying?: boolean; lastError?: string | null } } }) => {
+      .then((data: { speech?: { stt?: { configured?: boolean } } }) => {
         const state = data.speech?.stt
-        if (alive && state) setStt({ trying: state.primaryTrying !== false, lastError: state.lastError ?? null })
+        if (alive && state) setStt({ trying: state.configured !== false, lastError: null })
       })
       .catch(() => {})
     return () => {
@@ -169,9 +169,7 @@ export default function SettingsView() {
           note: {
             kind: 'ok',
             text:
-              provider === 'magpie'
-                ? 'Fish Audio did not answer, so NVIDIA’s voice read this preview.'
-                : 'Read by Fish Audio — the voice your read-aloud button will use.',
+              'Read by Fish Audio — the voice your read-aloud button will use. Hindi text switches to a Hindi voice automatically.',
           },
         })
       } catch (err) {
@@ -589,7 +587,7 @@ export default function SettingsView() {
             <Mic className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" strokeWidth={1.8} />
             <div className="min-w-0 text-ui-sm">
               <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="font-medium text-foreground/90">Dictation — Whisper large v3</span>
+                <span className="font-medium text-foreground/90">Dictation — Whisper large v3 turbo (Groq)</span>
                 {stt && (
                   <span
                     className={cn(
@@ -605,14 +603,14 @@ export default function SettingsView() {
                         stt.trying ? 'bg-emerald-500' : 'bg-amber-500',
                       )}
                     />
-                    {stt.trying ? 'answering' : 'upstream outage'}
+                    {stt.trying ? 'ready' : 'not configured'}
                   </span>
                 )}
               </p>
               <p className="mt-1 text-muted-foreground">
                 {!stt || stt.trying
-                  ? 'NVIDIA’s Whisper large v3 transcribes whatever you say into the composer.'
-                  : `NVIDIA’s Whisper function is refusing requests at their end (${stt.lastError ?? 'HTTP 500'}). BODHA keeps asking it first — until NVIDIA restores it, Parakeet types your words so dictation never goes quiet. Nothing to change; it switches back by itself.`}
+                  ? 'Whisper large v3 turbo on Groq transcribes what you say — Hindi, English or a mix — straight into the composer.'
+                  : 'The Groq key is not set on the server yet, so a backup recogniser is used. Add GROQ_API_KEY and redeploy for the best accuracy.'}
               </p>
             </div>
           </div>

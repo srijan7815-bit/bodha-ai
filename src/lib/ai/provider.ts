@@ -42,10 +42,10 @@ export class ProviderUnreachableError extends Error {
   }
 }
 
-export const DEFAULT_MODEL = 'z-ai/glm-5.3'
+export const DEFAULT_MODEL = 'moonshotai/kimi-k2.6'
 
 /** Fast, reliable models to fall back on when the primary stalls. */
-export const DEFAULT_FALLBACKS = ['nvidia/nemotron-3-super-120b-a12b', 'openai/gpt-oss-20b']
+export const DEFAULT_FALLBACKS = ['z-ai/glm-5.3-flash', 'nvidia/nemotron-3-super-120b-a12b', 'openai/gpt-oss-20b']
 
 const DEFAULT_BASE_URL = 'https://integrate.api.nvidia.com/v1'
 
@@ -69,6 +69,7 @@ function tuneFor(model: string, thinking: boolean): Record<string, unknown> | un
   if (thinking) return undefined
   if (/nemotron/i.test(model)) return { chat_template_kwargs: { enable_thinking: false } }
   if (/gpt-oss/i.test(model)) return { reasoning_effort: 'low' }
+  if (/kimi-k(2\.[5-9]|3)/i.test(model)) return { chat_template_kwargs: { thinking: false } }
   return undefined
 }
 

@@ -1,76 +1,43 @@
 /**
- * NVIDIA speech — the voice layer BODHA actually runs on.
+ * BODHA's voice layer.
  *
- * Both models are NVIDIA-hosted NIM functions reached over their NVCF HTTP
- * invocation endpoints with the same `nvapi-…` key the chat models use, so
- * voice needs no second vendor and no second bill:
+ *   TTS  Fish Audio only (S2.1 Pro). Hindi text is detected by script and read
+ *        with a Hindi reference voice, so Devanagari is spoken like a native
+ *        speaker would, not with an English voice reading Hindi letters.
+ *   STT  Groq Whisper large v3 turbo first (fast, free tier, 99 languages,
+ *        auto-detects Hindi / English / Hinglish), then Groq Whisper large v3,
+ *        then Fish Audio ASR, then NVIDIA Parakeet (English only) as a last
+ *        resort so dictation never just dies.
  *
- *   TTS  nvidia/magpie-tts-multilingual  /v1/audio/synthesize      → WAV
- *   STT  openai/whisper-large-v3        /v1/audio/transcriptions  → { text }
- *        nvidia/parakeet-ctc-1.1b-asr   /v1/audio/transcriptions  → { text }
- *
- * Two features with different needs, so they ask for different voices:
- *   • Read-aloud (the button under a message) asks for `fish` — Fish Audio's
- *     S2.1 Pro, the most natural voice, one clip at a time.
- *   • Live Mode asks for `magpie` — NVIDIA's own voice, which answers in ~1.9 s.
- *     A conversation speaks one clip per sentence, so latency beats timbre.
- * Either way the other provider is the fallback, and the browser voice is last,
- * so speech never just stops working.
- *
- * STT is Whisper large v3 first, as specified. Whisper's hosted HTTP route is
- * currently broken at NVIDIA's end — it answers 500 for every request shape
- * (verified 8 ways, including the older pexec API), while Parakeet answers 200
- * on the same audio. Rather than let a dead route add a second to every single
- * turn forever, a short-lived breaker skips Whisper after a 5xx and retries it
- * ten minutes later, so the moment NVIDIA's function recovers it takes over with
- * no code change and no redeploy.
+ * Keys are read from the server environment only — nothing reaches the browser.
  */
 
 import { chunkForSpeech, mapLimit } from './speech-chunks'
 
 export { chunkForSpeech, SPEECH_CHUNK_CHARS } from './speech-chunks'
 
-const WHISPER_FUNCTION_ID = process.env.WHISPER_FUNCTION_ID || 'b702f636-f60c-4a3d-a6f4-f3568c13bd7d'
-export const PARAKEET_FUNCTION_ID = process.env.PARAKEET_FUNCTION_ID || '1598d209-5e27-4d3c-8079-4751568b1081'
-export const MAGPIE_FUNCTION_ID = process.env.MAGPIE_FUNCTION_ID || '877104f7-e885-42b9-8de8-f6e4c6303969'
+/** Kept so older callers compile; every value now means "Fish Audio". */
+export type TtsProvider = 'fish' | 'magpie' | 'auto'
 
-/**
- * Whisper's route is dead upstream at the moment. Ten minutes is long enough
- * that a broken route costs nothing, and short enough that a recovery is picked
- * up while the student is still using the app.
- */
-const WHISPER_BREAKER_MS = 5 * 60 * 1000
-let whisperDownUntil = 0
-/** What NVIDIA said the last time Whisper was tried — surfaced in /api/health. */
-let whisperLastError: string | null = null
+const PARAKEET_FUNCTION_ID = process.env.PARAKEET_FUNCTION_ID || '1598d209-5e27-4d3c-8079-4751568b1081'
 
-export function nvcfURL(functionId: string, path: string) {
+function nvcfURL(functionId: string, path: string) {
   return `https://${functionId}.invocation.api.nvcf.nvidia.com${path}`
 }
 
-/** Speaker identities Magpie exposes for en-US. */
-export const MAGPIE_VOICES = ['Aria', 'Ray', 'Sofia', 'Jason', 'Leo', 'Mia'] as const
-export type MagpieVoice = (typeof MAGPIE_VOICES)[number]
-
-export function nvidiaKey(): string | null {
+function nvidiaKey(): string | null {
   return process.env.NVIDIA_API_KEY?.trim() || process.env.AI_API_KEY?.trim() || null
 }
 
-export function resolveMagpieVoice(input?: string | null, language = 'en-US'): string {
-  const raw = String(input ?? '').trim()
-  if (/^Magpie-/i.test(raw)) return raw
-  const speaker =
-    MAGPIE_VOICES.find(v => v.toLowerCase() === raw.toLowerCase()) ?? ('Aria' as MagpieVoice)
-  return `Magpie-Multilingual.${language.toUpperCase()}.${speaker}`
+function groqKey(): string | null {
+  return process.env.GROQ_API_KEY?.trim() || null
 }
 
-/** Which voice a caller wants first. */
-export type TtsProvider = 'fish' | 'magpie' | 'auto'
+/* ───────────────────────────── Fish Audio TTS ───────────────────────────── */
 
 /**
- * Fish Audio reference ids, so the read-aloud voice is a chosen voice rather
- * than whatever Fish picks by default. Keyed by the same speaker names Magpie
- * uses, so switching provider never changes which voice the student picked.
+ * Fish Audio reference ids, keyed by the speaker names the voice picker uses.
+ * Override any of them from the environment.
  */
 const FISH_VOICES: Record<string, string> = {
   Aria: process.env.FISH_VOICE_ARIA || '933563129e564b19a115bedd57b7406a', // warm female
@@ -81,183 +48,69 @@ const FISH_VOICES: Record<string, string> = {
   Leo: process.env.FISH_VOICE_LEO || 'c5f56a6cc2ec4fa8920cb4c5889a3fb7',
 }
 
-function fishReference(voice?: string | null): string {
+/** Hindi reference voices (public Fish Audio models). Override with FISH_VOICE_HINDI_F / _M. */
+const HINDI_FEMALE = process.env.FISH_VOICE_HINDI_F || 'a36c5e7d7dfb439c8d571acab05db554' // Hindi conversational narrator
+const HINDI_MALE = process.env.FISH_VOICE_HINDI_M || 'da7bf83f01104a86b460c52e6153b24a' // Hindi narration, mature male
+const MALE_SPEAKERS = new Set(['Ray', 'Jason', 'Leo'])
+
+/** Share of letters that are Devanagari — the cheapest reliable "this is Hindi" test. */
+export function devanagariShare(text: string): number {
+  const letters = text.match(/[\p{L}\p{M}]/gu)
+  if (!letters?.length) return 0
+  const deva = text.match(/[\u0900-\u097F]/g)?.length ?? 0
+  return deva / letters.length
+}
+
+/** Chosen once per passage, so a long answer never changes voice halfway through. */
+function fishReference(voice: string | null | undefined, text: string): string {
   const raw = String(voice ?? '').trim()
-  if (!raw) return FISH_VOICES.Aria
   if (/^[0-9a-f]{32}$/i.test(raw)) return raw // already a Fish reference id
+  if (devanagariShare(text) > 0.2) return MALE_SPEAKERS.has(raw) ? HINDI_MALE : HINDI_FEMALE
   return FISH_VOICES[raw] ?? FISH_VOICES.Aria
-}
-
-/**
- * Long passages are spoken in pieces.
- *
- * Fish Audio reads 1 400 characters in a single take in ~33 s, which no request
- * timeout survives and which leaves the student waiting in silence — the reason
- * read-aloud appeared broken on exactly the long answers worth reading. The
- * same passage split into 320-character sentences comes back in ~8 s because
- * the pieces are synthesised at the same time, and each piece is comfortably
- * inside every timeout. Short text is still a single request.
- */
-/**
- * Splits a WAV into its format and sample data, so several clips can be joined
- * into one. Magpie answers with a real RIFF file per request; joining them means
- * keeping the first format block and appending every data block in order.
- */
-function readWav(buf: Buffer): { fmt: Buffer; data: Buffer } | null {
-  if (buf.length < 44 || buf.toString('latin1', 0, 4) !== 'RIFF' || buf.toString('latin1', 8, 12) !== 'WAVE') return null
-  let offset = 12
-  let fmt: Buffer | null = null
-  const datas: Buffer[] = []
-  while (offset + 8 <= buf.length) {
-    const id = buf.toString('latin1', offset, offset + 4)
-    const size = buf.readUInt32LE(offset + 4)
-    const body = buf.subarray(offset + 8, Math.min(offset + 8 + size, buf.length))
-    if (id === 'fmt ') fmt = body
-    else if (id === 'data') datas.push(body)
-    offset += 8 + size + (size % 2)
-  }
-  if (!fmt || !datas.length) return null
-  return { fmt, data: Buffer.concat(datas) }
-}
-
-function writeWav(fmt: Buffer, data: Buffer): Buffer {
-  const header = Buffer.alloc(44)
-  header.write('RIFF', 0)
-  header.writeUInt32LE(36 + data.length, 4)
-  header.write('WAVE', 8)
-  header.write('fmt ', 12)
-  header.writeUInt32LE(16, 16)
-  fmt.copy(header, 20, 0, Math.min(16, fmt.length))
-  header.write('data', 36)
-  header.writeUInt32LE(data.length, 40)
-  return Buffer.concat([header, data])
-}
-
-function mergeWavs(parts: Buffer[]): Buffer | null {
-  const parsed = parts.map(readWav)
-  if (parsed.some(p => !p)) return null
-  // Sample rate and encoding must match or the join would sound wrong.
-  const first = parsed[0]!
-  const signature = (fmt: Buffer) => `${fmt.readUInt16LE(0)}:${fmt.readUInt16LE(2)}:${fmt.readUInt32LE(4)}:${fmt.readUInt16LE(14)}`
-  if (parsed.some(p => signature(p!.fmt) !== signature(first.fmt))) return null
-  return writeWav(first.fmt, Buffer.concat(parsed.map(p => p!.data)))
 }
 
 function toArrayBuffer(buf: Buffer): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
 }
 
-/** Whether Whisper is worth trying right now, and what happened last time. */
-export function speechStatus() {
-  const now = Date.now()
-  return {
-    tts: {
-      primary: 'Fish Audio s2.1-pro',
-      fallback: 'NVIDIA Magpie Multilingual',
-      configured: Boolean(process.env.FISH_AUDIO_API_KEY?.trim()),
-    },
-    stt: {
-      primary: 'whisper-large-v3',
-      fallback: 'parakeet-ctc-1.1b-asr',
-      /** False only while NVIDIA's Whisper function is answering 5xx. */
-      primaryTrying: now >= whisperDownUntil,
-      retryInSeconds: whisperDownUntil > now ? Math.ceil((whisperDownUntil - now) / 1000) : 0,
-      lastError: whisperLastError,
-    },
-  }
-}
-
 export interface Synthesized {
   bytes: ArrayBuffer
   contentType: string
-  provider: 'fish' | 'magpie'
+  provider: 'fish'
 }
 
 /**
- * Text → speech, best available first.
- *
- * Fish Audio's S2.1 Pro sounds more human, so it goes first when a key exists;
- * NVIDIA Magpie is the fallback that keeps read-aloud alive when Fish is out of
- * credit or slow. Returns null only when neither provider answered, which is
- * the client's cue to use the browser's own voice.
+ * Text → speech with Fish Audio. Long text is cut into sentences and
+ * synthesised a few at a time, then joined in order (MP3 frames concatenate
+ * into a file every player accepts). Returns null only when Fish itself is
+ * unreachable, which is the client's cue to use the device voice.
  */
 export async function synthesize(
   text: string,
   opts: { voice?: string | null; language?: string; timeoutMs?: number; provider?: TtsProvider } = {},
 ): Promise<Synthesized | null> {
-  const language = opts.language ?? 'en-US'
-  const timeout = opts.timeoutMs ?? 20_000
-  // 'magpie' puts NVIDIA's voice in front: Live Mode speaks one clip per
-  // sentence and needs the faster answer. 'fish' and 'auto' lead with Fish.
-  const magpieFirst = opts.provider === 'magpie'
-
-  if (!magpieFirst) {
-    const early = await fishSynthesizeLong(text, opts.voice, timeout)
-    if (early) return early
-  }
-
-  const magpie = await magpieSynthesizeLong(text, opts.voice, language, timeout)
-  if (magpie) return magpie
-  if (magpieFirst) return fishSynthesizeLong(text, opts.voice, timeout)
-
-  return null
-}
-
-/**
- * Fish, for any length of text. One request for short passages; several at once
- * for long ones, joined in order — MP3 frames concatenate into a file every
- * player accepts.
- */
-async function fishSynthesizeLong(
-  text: string,
-  voice: string | null | undefined,
-  timeout: number,
-): Promise<Synthesized | null> {
+  const timeout = opts.timeoutMs ?? 25_000
   const chunks = chunkForSpeech(text)
   if (!chunks.length) return null
-  if (chunks.length === 1) return fishSynthesize(chunks[0], voice, timeout)
 
-  const parts = await mapLimit(chunks, 4, chunk => fishSynthesize(chunk, voice, timeout))
+  const reference = fishReference(opts.voice, text)
+  if (chunks.length === 1) return fishSynthesize(chunks[0], reference, timeout)
+
+  const parts = await mapLimit(chunks, 4, chunk => fishSynthesize(chunk, reference, timeout))
   // A missing piece would silently cut the answer in half, so a partial result
-  // is treated as no result and the other provider gets the whole passage.
+  // is treated as no result.
   if (parts.some(part => !part)) return null
   const bytes = Buffer.concat(parts.map(part => Buffer.from(part!.bytes)))
   return { bytes: toArrayBuffer(bytes), contentType: 'audio/mpeg', provider: 'fish' }
 }
 
-/**
- * Magpie, for the lengths Magpie is good at.
- *
- * NVIDIA's hosted Magpie function holds one worker and starts cold: in testing
- * a 130-character piece answered in 6 s, a 320-character piece timed out at
- * 40 s, and a 640-character piece answered in 19 s. That is fine for Live Mode,
- * which speaks one sentence at a time, and wrong for a passage — waiting a
- * minute for a fallback is worse than letting the device voice read it in a
- * second. Anything longer than one piece is therefore not Magpie's job.
- */
-const MAGPIE_MAX_CHARS = 400
-
-async function magpieSynthesizeLong(
-  text: string,
-  voice: string | null | undefined,
-  language: string,
-  timeout: number,
-): Promise<Synthesized | null> {
-  if (text.length > MAGPIE_MAX_CHARS) {
-    console.warn('[speech] Magpie skipped: NVIDIA\'s function is serial and cold for text this long')
-    return null
-  }
-  return magpieSynthesize(text, voice, language, timeout)
-}
-
-
-async function fishSynthesize(
-  text: string,
-  voice: string | null | undefined,
-  timeout: number,
-): Promise<Synthesized | null> {
+async function fishSynthesize(text: string, reference: string, timeout: number): Promise<Synthesized | null> {
   const fishKey = process.env.FISH_AUDIO_API_KEY?.trim()
-  if (fishKey) {
+  if (!fishKey) return null
+
+  // One quick retry: Fish occasionally answers 429/5xx under load, and a second
+  // attempt a moment later nearly always lands. Anything else is final.
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await fetch(process.env.FISH_TTS_URL?.trim() || 'https://api.fish.audio/v1/tts', {
         method: 'POST',
@@ -268,7 +121,7 @@ async function fishSynthesize(
           // body silently bills a paid model and fails with 402.
           model: process.env.FISH_AUDIO_TTS_MODEL?.trim() || 's2.1-pro-free',
         },
-        body: JSON.stringify({ text, format: 'mp3', reference_id: fishReference(voice) }),
+        body: JSON.stringify({ text, format: 'mp3', reference_id: reference }),
         signal: AbortSignal.timeout(timeout),
       })
       if (res.ok) {
@@ -276,72 +129,68 @@ async function fishSynthesize(
         if (bytes.byteLength > 1000) {
           return { bytes, contentType: res.headers.get('content-type') || 'audio/mpeg', provider: 'fish' }
         }
-      } else {
-        console.warn('[speech] Fish Audio TTS declined:', res.status)
+        return null
       }
+      console.warn('[speech] Fish Audio TTS declined:', res.status)
+      if (res.status !== 429 && res.status < 500) return null
     } catch (err) {
       console.warn('[speech] Fish Audio TTS failed:', (err as Error).message)
     }
+    await new Promise(r => setTimeout(r, 450))
   }
   return null
 }
 
-async function magpieSynthesize(
-  text: string,
-  voice: string | null | undefined,
-  language: string,
-  timeout: number,
-): Promise<Synthesized | null> {
-  const key = nvidiaKey()
-  if (!key) return null
+/* ──────────────────────────────── STT ──────────────────────────────── */
 
-  try {
-    const form = new FormData()
-    form.append('text', text)
-    form.append('language', language)
-    form.append('voice', resolveMagpieVoice(voice, language))
-    form.append('encoding', 'LINEAR_PCM')
-    form.append('sample_rate_hz', process.env.TTS_SAMPLE_RATE?.trim() || '22050')
+const GROQ_URL = process.env.GROQ_STT_URL?.trim() || 'https://api.groq.com/openai/v1/audio/transcriptions'
+const GROQ_MODELS = [process.env.GROQ_STT_MODEL?.trim() || 'whisper-large-v3-turbo', 'whisper-large-v3']
 
-    const res = await fetch(nvcfURL(MAGPIE_FUNCTION_ID, '/v1/audio/synthesize'), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}` },
-      body: form,
-      signal: AbortSignal.timeout(timeout),
-    })
+/**
+ * Whisper reads this as "what was said just before", which steers spelling of
+ * names and terms it would otherwise guess: BODHA, Sanskrit philosophy, Hindi
+ * mixed with English. It is vocabulary, not an instruction.
+ */
+const STT_PROMPT =
+  'BODHA AI, Srijan Singh, Parv Mishra. Indian Knowledge Systems: Vedas, Upanishads, Bhagavad Gita, ' +
+  'Ramayana, Mahabharata, Vedanta, Yoga Sutras, Patanjali, Panini, Aryabhata, Charaka, Sushruta, Ayurveda, ' +
+  'dharma, karma, moksha, atman, brahman, sutra, shloka. ' +
+  'यह हिंदी और English मिलकर बोले गए सवाल हैं: भगवद्गीता, उपनिषद, वेद, योग, आयुर्वेद, धर्म, कर्म, मोक्ष।'
 
-    if (!res.ok) {
-      console.warn('[speech] Magpie TTS failed:', res.status, (await res.text().catch(() => '')).slice(0, 160))
-      return null
-    }
+/** Languages worth forcing when the caller names one. English is left to auto-detect on purpose. */
+const FORCEABLE = new Set(['hi', 'bn', 'ta', 'te', 'mr', 'gu', 'kn', 'ml', 'pa', 'ur', 'sa', 'ne'])
 
-    const type = res.headers.get('content-type') || ''
-    // Some deployments answer JSON with base64 audio instead of raw bytes.
-    if (type.includes('application/json')) {
-      const data = (await res.json().catch(() => ({}))) as Record<string, string>
-      const b64 = data.audio || data.audio_base64 || data.audio_content || ''
-      if (!b64) return null
-      const buf = Buffer.from(b64, 'base64')
-      return { bytes: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer, contentType: 'audio/wav', provider: 'magpie' }
-    }
+/** Things Whisper invents out of silence and room noise. */
+const PHANTOMS =
+  /^(thank you( so much)?( for watching)?|thanks for watching|please subscribe|you|bye|\.|…|धन्यवाद|शुक्रिया)[.!\s]*$/i
 
-    const bytes = await res.arrayBuffer()
-    if (!bytes.byteLength) return null
-    return { bytes, contentType: type.startsWith('audio/') ? type : 'audio/wav', provider: 'magpie' }
-  } catch (err) {
-    console.warn('[speech] Magpie TTS failed:', (err as Error).message)
-    return null
+export function speechStatus() {
+  return {
+    tts: {
+      primary: 'Fish Audio s2.1 pro (Hindi voice for Devanagari)',
+      fallback: null,
+      configured: Boolean(process.env.FISH_AUDIO_API_KEY?.trim()),
+    },
+    stt: {
+      primary: GROQ_MODELS[0],
+      fallback: [GROQ_MODELS[1], 'fish transcribe-1', 'parakeet-ctc-1.1b-asr'],
+      configured: Boolean(groqKey()),
+    },
   }
 }
 
-/**
- * Speech → text: Whisper large v3, then Parakeet CTC, then Fish Audio.
- *
- * Whisper is the model the product asked for and is tried first on every
- * attempt the breaker allows; Parakeet is what answers while NVIDIA's Whisper
- * function is down. Both are NVIDIA NIM, reached with the same key as the chat
- * models, so dictation needs no second vendor.
- */
+interface GroqVerbose {
+  text?: string
+  segments?: Array<{ avg_logprob?: number; no_speech_prob?: number }>
+}
+
+/** True when Whisper itself says this was silence or noise. */
+function looksLikeSilence(data: GroqVerbose): boolean {
+  const segs = data.segments
+  if (!segs?.length) return false
+  return segs.every(s => (s.no_speech_prob ?? 0) > 0.6 && (s.avg_logprob ?? 0) < -0.7)
+}
+
 export async function transcribe(
   audio: Buffer,
   mime: string,
@@ -362,81 +211,68 @@ export async function transcribe(
             ? 'flac'
             : 'webm'
 
-  const bare = (opts.language || process.env.STT_LANGUAGE || 'en').toLowerCase()
-  const regional = /^[a-z]{2}$/.test(bare) ? `${bare}-US` : bare
+  const hint = (opts.language || process.env.STT_LANGUAGE || '').toLowerCase().split(/[-_]/)[0]
+  // Forcing "en" would make Whisper transliterate Hindi speech into English
+  // nonsense, so English (and anything unknown) is detected from the audio.
+  const forced = FORCEABLE.has(hint) ? hint : undefined
 
-  const attempts: Array<{
-    label: string
-    run: () => Promise<Response>
-    onFail?: (status: number) => void
-  }> = []
-  const key = nvidiaKey()
+  const attempts: Array<{ label: string; run: () => Promise<Response> }> = []
 
-  /** One multipart body, built fresh for each provider. */
-  const formFor = (model: string | null, lang: string) => {
-    const form = new FormData()
-    form.append('file', new Blob([new Uint8Array(audio)], { type: mime }), `audio.${extension}`)
-    // Whisper takes a `model` field; Parakeet rejects an unknown one.
-    if (model) form.append('model', model)
-    form.append('language', lang)
-    form.append('response_format', 'json')
-    return form
-  }
-
-  if (key) {
-    // ── Whisper large v3 first, as specified ──
-    // Its hosted HTTP route is down at NVIDIA's end right now (a hard 500 for
-    // every request shape, on both the invocation and pexec hosts, while
-    // Parakeet answers 200 on the same audio). A dead route must not add a
-    // second to every single turn forever, so a short breaker steps over it and
-    // retries every ten minutes — the moment NVIDIA's function recovers,
-    // Whisper becomes the model that answers, with no code change.
-    if (Date.now() >= whisperDownUntil) {
+  const gKey = groqKey()
+  if (gKey) {
+    for (const model of GROQ_MODELS) {
       attempts.push({
-        label: 'whisper-large-v3',
-        run: () =>
-          fetch(nvcfURL(WHISPER_FUNCTION_ID, '/v1/audio/transcriptions'), {
+        label: `groq ${model}`,
+        run: () => {
+          const form = new FormData()
+          form.append('file', new Blob([new Uint8Array(audio)], { type: mime }), `audio.${extension}`)
+          form.append('model', model)
+          form.append('response_format', 'verbose_json')
+          form.append('temperature', '0')
+          form.append('prompt', STT_PROMPT)
+          if (forced) form.append('language', forced)
+          return fetch(GROQ_URL, {
             method: 'POST',
-            headers: { Authorization: `Bearer ${key}` },
-            body: formFor('whisper-large-v3', bare),
+            headers: { Authorization: `Bearer ${gKey}` },
+            body: form,
             signal: AbortSignal.timeout(timeout),
-          }),
-        onFail: status => {
-          if (status >= 500) {
-            whisperDownUntil = Date.now() + WHISPER_BREAKER_MS
-            whisperLastError = `HTTP ${status} from NVIDIA's whisper-large-v3 function`
-            console.warn('[speech] whisper-large-v3 answered', status, '— skipping it for 5 minutes')
-          }
+          })
         },
       })
     }
-
-    // ── Parakeet CTC: the model that actually answers on HTTP ──
-    attempts.push({
-      label: 'parakeet',
-      run: () =>
-        fetch(nvcfURL(PARAKEET_FUNCTION_ID, '/v1/audio/transcriptions'), {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${key}` },
-          body: formFor(null, regional),
-          signal: AbortSignal.timeout(timeout),
-        }),
-    })
   }
 
   const fishKey = process.env.FISH_AUDIO_API_KEY?.trim()
   if (fishKey) {
     attempts.push({
-      label: 'fish',
+      label: 'fish transcribe-1',
       run: () => {
         const form = new FormData()
         form.append('audio', new Blob([new Uint8Array(audio)], { type: mime }), `audio.${extension}`)
         return fetch(process.env.FISH_STT_URL?.trim() || 'https://api.fish.audio/v1/asr', {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${fishKey}`,
-            model: process.env.FISH_AUDIO_STT_MODEL?.trim() || 'transcribe-1',
-          },
+          headers: { Authorization: `Bearer ${fishKey}`, model: process.env.FISH_AUDIO_STT_MODEL?.trim() || 'transcribe-1' },
+          body: form,
+          signal: AbortSignal.timeout(timeout),
+        })
+      },
+    })
+  }
+
+  // Parakeet only understands English, so it is the very last resort and only
+  // when nobody asked for another language.
+  const nKey = nvidiaKey()
+  if (nKey && !forced) {
+    attempts.push({
+      label: 'parakeet',
+      run: () => {
+        const form = new FormData()
+        form.append('file', new Blob([new Uint8Array(audio)], { type: mime }), `audio.${extension}`)
+        form.append('language', 'en-US')
+        form.append('response_format', 'json')
+        return fetch(nvcfURL(PARAKEET_FUNCTION_ID, '/v1/audio/transcriptions'), {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${nKey}` },
           body: form,
           signal: AbortSignal.timeout(timeout),
         })
@@ -447,41 +283,36 @@ export async function transcribe(
   if (!attempts.length) return { error: 'Dictation is not configured.', status: 503 }
 
   let lastStatus = 502
+  let heardSilence = false
   for (const attempt of attempts) {
     try {
       const res = await attempt.run()
       if (!res.ok) {
         lastStatus = res.status
-        attempt.onFail?.(res.status)
         console.warn(`[speech] ${attempt.label} STT → HTTP ${res.status}`)
         continue
       }
-      const data = (await res.json().catch(() => ({}))) as {
-        text?: string
+      const data = (await res.json().catch(() => ({}))) as GroqVerbose & {
         transcript?: string
         results?: Array<{ alternatives?: Array<{ transcript?: string }> }>
       }
       const text = (data.text || data.transcript || data.results?.[0]?.alternatives?.[0]?.transcript || '').trim()
-      if (text) {
-        if (attempt.label === 'whisper-large-v3') {
-          // Recovered — stop stepping over it and forget the failure.
-          whisperDownUntil = 0
-          whisperLastError = null
-        }
-        return { text, provider: attempt.label }
+      if (!text || PHANTOMS.test(text) || looksLikeSilence(data)) {
+        // A clean "nothing there" answer is final — trying a weaker model on
+        // silence only invites it to invent words.
+        heardSilence = true
+        break
       }
-      lastStatus = 422
+      return { text, provider: attempt.label }
     } catch (err) {
       console.warn(`[speech] ${attempt.label} STT failed:`, (err as Error).message)
       lastStatus = 504
     }
   }
 
+  if (heardSilence) return { error: 'I could not hear any speech in that recording.', status: 422 }
   return {
-    error:
-      lastStatus === 422
-        ? 'I could not hear any speech in that recording.'
-        : 'The dictation service could not be reached. Your browser can still listen directly.',
-    status: lastStatus === 422 ? 422 : 502,
+    error: 'The dictation service could not be reached. Your browser can still listen directly.',
+    status: 502,
   }
 }

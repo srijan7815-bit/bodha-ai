@@ -9,18 +9,11 @@ export const maxDuration = 60
 const MAX_CHARS = 1500
 
 /**
- * POST /api/tts — one passage of speech.
+ * POST /api/tts — one passage of speech, Fish Audio only.
  *
- * Body: { text, voice?, language?, provider? }
- *
- * `provider` lets the two voice features ask for what they actually need:
- *   'fish'   → Fish Audio S2.1 Pro first — read-aloud, one clip, best voice.
- *   'magpie' → NVIDIA Magpie first — Live Mode, one clip per sentence, faster.
- *   'auto'   → Fish first, Magpie second (the default).
- * The other provider is always the fallback, so a single vendor outage degrades
- * the voice rather than silencing it. Proxied, so no key reaches the browser.
- *
- * 503 with `fallback: true` tells the client to use the browser voice instead.
+ * Body: { text, voice?, language?, provider? } — `provider` is accepted for
+ * older clients and ignored. Hindi (Devanagari) text is read by a Hindi voice.
+ * 503 with `fallback: true` tells the client to use the device voice instead.
  */
 export async function POST(req: NextRequest) {
   const user = await getAuthUser(req)
@@ -48,11 +41,11 @@ export async function POST(req: NextRequest) {
     voice,
     language,
     provider,
-    timeoutMs: provider === 'magpie' ? 15_000 : 25_000,
+    timeoutMs: 25_000,
   })
   if (!audio) {
     return NextResponse.json(
-      { error: 'No voice service answered — the browser voice will read this.', fallback: true },
+      { error: 'BODHA\'s voice is taking a breath — the device voice will read this.', fallback: true },
       { status: 503 },
     )
   }

@@ -37,6 +37,8 @@ export interface TutorContext {
   preferred?: ProviderConfig[]
   /** Retrieved passages from the IKS shelf, already formatted for the prompt. */
   iksContext?: string | null
+  /** The answer will be spoken in Live Mode: shorter, no Markdown. */
+  live?: boolean
 }
 
 const PRETTY: Record<string, string> = {
@@ -45,6 +47,7 @@ const PRETTY: Record<string, string> = {
   'nvidia/nemotron-3-super-120b-a12b': 'Nemotron 3 Super',
   'openai/gpt-oss-20b': 'GPT-OSS 20B',
   'moonshotai/kimi-k3': 'Kimi K3',
+  'moonshotai/kimi-k2.6': 'Kimi K2.6',
 }
 
 function prettyName(cfg: ProviderConfig | string) {
@@ -67,6 +70,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
     documentTitle: ctx.document?.title,
     documentText: ctx.document?.textContent,
     iksContext: ctx.iksContext,
+    live: ctx.live,
   })
 
   const recent = ctx.history.slice(-HISTORY_LIMIT)

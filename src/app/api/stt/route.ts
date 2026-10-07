@@ -13,9 +13,10 @@ const MAX_BYTES = 12 * 1024 * 1024
  *
  * Multipart form: { audio: File } (optionally `language`).
  *
- * NVIDIA Parakeet answers this reliably; Fish Audio transcribe-1 and Whisper
- * are tried in turn if it does not. When every provider declines, the client is
- * told to fall back to the browser's own recogniser (`fallback: true`).
+ * Groq Whisper large v3 turbo transcribes it (language auto-detected, so Hindi,
+ * English and Hinglish all work); backups are tried in turn. When every
+ * provider declines, the client is told to use the browser's recogniser
+ * (`fallback: true`).
  */
 export async function POST(req: NextRequest) {
   const user = await getAuthUser(req)

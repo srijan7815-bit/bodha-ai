@@ -328,11 +328,11 @@ export default function LiveMode({
     setPhase('listening')
     const turn = ++turnRef.current
 
-    // PRIMARY: our own endpointing + server transcription (Whisper → Parakeet).
+    // PRIMARY: our own endpointing + server transcription (Groq Whisper large v3 turbo).
     if (serverSttRef.current && micSupported()) {
       startingRef.current = true
       void startLiveTurn({
-        language: 'en',
+        // No language hint: Whisper detects Hindi, English or a mix from the audio.
         // Ignore the microphone entirely while BODHA is talking, so our own
         // voice coming back through the speakers cannot retrigger the detector.
         isMuted: () => speakingRef.current || mutedRef.current,
