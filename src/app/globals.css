@@ -501,3 +501,11 @@ pre {
     scroll-behavior: auto !important;
   }
 }
+
+/* The diya on the home screen breathes — a slow flicker, never a distraction. */
+@keyframes bodha-flame {
+  0%, 100% { transform: translateY(0) scale(1); filter: drop-shadow(0 0 10px rgb(var(--primary) / 0.25)); }
+  50% { transform: translateY(-3px) scale(1.035); filter: drop-shadow(0 0 22px rgb(var(--primary) / 0.45)); }
+}
+.animate-flame { animation: bodha-flame 4.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .animate-flame { animation: none; } }

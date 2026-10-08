@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowDown, BookOpen, Check, Copy, FileText, GraduationCap, Lightbulb, RefreshCw, Sigma, Sparkles, SquarePen, Volume2, VolumeX, X } from 'lucide-react'
+import { ArrowDown, BookOpen, Check, Copy, FileText, GraduationCap, Lightbulb, Menu, Moon, RefreshCw, Sigma, Sun, SquarePen, Volume2, VolumeX, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { authFetch } from '@/lib/firebase/client-token'
 import { useSpeaker, useDictation } from '@/lib/voice'
@@ -12,11 +12,12 @@ import Markdown, { type RunnableLang } from '@/components/Markdown'
 import Composer from '@/components/Composer'
 import LiveMode from '@/components/LiveMode'
 import SandboxDrawer from '@/components/SandboxDrawer'
-import ModelToggle from '@/components/ModelToggle'
+import { BodhaMark } from '@/components/Brand'
+import { useAuth } from '@/components/AuthProvider'
 import { activeModel, toggleOptions, useSettings } from '@/lib/settings-client'
 import { resumeOrbAudio } from '@/lib/orbAudio'
 import DocPicker from '@/components/DocPicker'
-import { announceChatsChanged } from '@/components/AppShell'
+import { announceChatsChanged, useShell } from '@/components/AppShell'
 import { Sources } from '@/components/Sources'
 import type { Chat, DocumentMeta, Message, MessageSource } from '@/lib/types'
 
@@ -34,9 +35,9 @@ const DRAFT_PREFIX = 'bodha:draft:'
 const DRAFT_MAX_AGE = 20 * 60 * 1000
 
 const SUGGESTIONS = [
-  { icon: Sigma, text: 'Explain the chain rule with a simple example' },
-  { icon: Lightbulb, text: 'Why is the sky blue? Teach me step by step' },
-  { icon: GraduationCap, text: 'Quiz me on the French Revolution' },
+  { icon: Lightbulb, text: 'What did Aryabhata really discover?' },
+  { icon: GraduationCap, text: 'भगवद्गीता का कर्मयोग सरल भाषा में समझाइए' },
+  { icon: Sigma, text: 'Explain the Kerala school’s infinite series' },
   { icon: BookOpen, text: 'Summarise the chapter I uploaded' },
 ]
 
@@ -68,6 +69,8 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   const abortRef = useRef<AbortController | null>(null)
 
   const router = useRouter()
+  const shell = useShell()
+  const { user } = useAuth()
   const { settings, connected, savePreferences } = useSettings()
 
   // Which brain answers: 'bodha', or the id of one of the student's own models.
@@ -459,8 +462,8 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   /**
    * Read this message aloud — the button under a finished answer.
    *
-   * Fish Audio is asked for by name here; the server falls back to NVIDIA's
-   * voice and then to the browser's if Fish is unavailable. This is a
+   * Fish Audio is asked for by name here; if it is unavailable the browser's
+   * own voice reads instead. This is a
    * self-contained feature: it shares no state with Live Mode, and Live Mode's
    * own speech never goes through here.
    */
@@ -485,8 +488,14 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
     <div className="flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
         {/* ── Header ─────────────────────────────────────────────────────── */}
-        <header className="z-20 flex h-13 shrink-0 items-center gap-2 border-b border-border/60 bg-background/85 px-3 py-2 backdrop-blur md:px-6">
-          <h1 className="min-w-0 flex-1 truncate text-ui font-medium text-foreground/90">{title}</h1>
+        <header className="z-20 flex h-14 shrink-0 items-center gap-1 px-2 md:border-b md:border-border/60 md:bg-background/85 md:px-6 md:backdrop-blur">
+          <button type="button" onClick={shell.openDrawer} className="icon-btn h-11 w-11 md:hidden" aria-label="Open menu">
+            <Menu className="h-[22px] w-[22px]" strokeWidth={1.6} />
+          </button>
+
+          <h1 className="min-w-0 flex-1 truncate px-1 text-center text-ui font-medium text-foreground/90 md:text-left">
+            {messages.length > 0 || streaming ? title : ''}
+          </h1>
 
           {doc && (
             <Link
@@ -499,33 +508,21 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
             </Link>
           )}
 
-          {connected && settings.custom && (
-            <ModelToggle
-              options={modelOptions}
-              value={model}
-              onChange={choice => void savePreferences({ preferredModel: choice })}
-              busy={busy}
-            />
+          {messages.length > 0 && (
+            <button type="button" onClick={shell.newChat} className="icon-btn h-11 w-11" aria-label="New chat" title="New chat">
+              <SquarePen className="h-5 w-5" strokeWidth={1.6} />
+            </button>
           )}
-
           <button
             type="button"
-            onClick={() => {
-              const next = !liveOpen
-              setLiveOpen(next)
-              if (next) void resumeOrbAudio()
-            }}
-            aria-pressed={liveOpen}
-            title="Live Mode — talk with BODHA out loud"
-            className={cn(
-              'inline-flex h-8 items-center gap-1.5 rounded-full border px-2.5 text-ui-sm transition-colors',
-              liveOpen
-                ? 'border-primary/40 bg-primary/10 text-primary'
-                : 'border-border/70 bg-surface text-muted-foreground hover:text-foreground',
-            )}
+            onClick={shell.toggleTheme}
+            className="icon-btn h-11 w-11"
+            aria-label={shell.dark ? 'Switch to paper mode' : 'Switch to night mode'}
+            title={shell.dark ? 'Paper mode' : 'Night mode'}
           >
-            <Sparkles className="h-3.5 w-3.5" strokeWidth={1.8} />
-            <span className="hidden sm:inline">Live</span>
+            <motion.span key={shell.dark ? 'sun' : 'moon'} initial={{ rotate: -40, opacity: 0, scale: 0.7 }} animate={{ rotate: 0, opacity: 1, scale: 1 }} transition={{ duration: 0.25 }} className="flex">
+              {shell.dark ? <Sun className="h-5 w-5" strokeWidth={1.6} /> : <Moon className="h-5 w-5" strokeWidth={1.6} />}
+            </motion.span>
           </button>
         </header>
 
@@ -533,7 +530,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         <div ref={scrollRef} className="scrollbar-quiet min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-read px-4 pb-8 pt-6 md:px-6">
             {messages.length === 0 && !streaming && (
-              <EmptyState hasDocument={!!doc} docTitle={doc?.title} onPick={text => setDraft(text)} />
+              <EmptyState name={user?.name?.trim().split(/\s+/)[0]} hasDocument={!!doc} docTitle={doc?.title} onPick={text => setDraft(text)} />
             )}
 
             <div className="space-y-6">
@@ -615,7 +612,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
                 setAtBottom(true)
                 scrollToBottom()
               }}
-              className="absolute bottom-36 left-1/2 z-20 -translate-x-1/2 rounded-full border border-border/80 bg-surface/95 p-2 shadow-card backdrop-blur"
+              className="absolute bottom-40 left-1/2 z-20 -translate-x-1/2 rounded-full border border-border/80 bg-surface/95 p-2 shadow-card backdrop-blur"
               aria-label="Jump to the latest message"
             >
               <ArrowDown className="h-4 w-4 text-muted-foreground" strokeWidth={1.8} />
@@ -624,8 +621,8 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         </AnimatePresence>
 
         {/* ── Composer ───────────────────────────────────────────────────── */}
-        <div className="relative z-10 shrink-0 border-t border-border/60 bg-background/95 pb-safe backdrop-blur">
-          <div className="mx-auto w-full max-w-read px-3 py-3 md:px-6">
+        <div className="relative z-10 shrink-0 bg-gradient-to-t from-background from-70% to-transparent pb-safe">
+          <div className="mx-auto w-full max-w-read px-3 pb-3 pt-2 md:px-6">
             <Composer
               value={draft}
               onChange={setDraft}
@@ -635,6 +632,16 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
               dictation={dictation}
               onAttach={() => setPickerOpen(true)}
               attachLabel={doc ? `Linked: ${doc.title}` : 'Link a document'}
+              linkedDoc={doc}
+              onClearDoc={() => setDoc(null)}
+              onLive={() => {
+                setLiveOpen(true)
+                void resumeOrbAudio()
+              }}
+              liveActive={liveOpen}
+              modelOptions={connected && settings.custom ? modelOptions : [{ id: 'bodha', label: 'BODHA' }]}
+              modelValue={model}
+              onModelChange={choice => void savePreferences({ preferredModel: choice })}
             />
           </div>
         </div>
@@ -746,49 +753,71 @@ function AssistantMessage({
 }
 
 function EmptyState({
+  name,
   hasDocument,
   docTitle,
   onPick,
 }: {
+  name?: string
   hasDocument: boolean
   docTitle?: string
   onPick: (text: string) => void
 }) {
   return (
-    <div className="animate-fade-up pb-4 pt-6 text-center md:pt-12">
-      <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-        <svg viewBox="0 0 24 24" width="30" height="30" fill="none" aria-hidden>
-          <path d="M12 2.6c-2.6 2.9-4.1 5.4-4.1 7.7a4.1 4.1 0 0 0 8.2 0c0-2.3-1.5-4.8-4.1-7.7Z" fill="currentColor" />
-          <path d="M4.6 15.4c1.3 2.9 4.1 4.6 7.4 4.6s6.1-1.7 7.4-4.6c-2 .9-4.6 1.4-7.4 1.4s-5.4-.5-7.4-1.4Z" fill="currentColor" opacity=".8" />
-        </svg>
-      </div>
-      <h2 className="font-display text-[1.6rem] font-semibold tracking-[-0.02em] text-foreground">
-        Namaste, I am <span className="font-deva">बोध</span>
-      </h2>
-      <p className="mx-auto mt-2.5 max-w-[46ch] font-serif text-reading text-muted-foreground text-pretty">
-        {hasDocument && docTitle
-          ? `I have “${docTitle}” open. Ask me about any part of it, or we can start somewhere new.`
-          : 'Your patient tutor for anything you are studying. Ask a question, upload a book, or turn on Live Mode and simply talk.'}
-      </p>
+    <div className="flex min-h-[56dvh] flex-col items-center justify-center pb-4 text-center">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.8, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+        className="animate-flame mb-6"
+      >
+        <BodhaMark size={64} />
+      </motion.div>
 
-      <div className="mx-auto mt-7 grid max-w-[560px] gap-2 sm:grid-cols-2">
-        {SUGGESTIONS.map(({ icon: Icon, text }) => (
-          <button
+      <motion.p
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay: 0.12, ease: [0.22, 1, 0.36, 1] }}
+        className="font-deva text-[18px] text-primary"
+      >
+        नमस्ते{name ? `, ${name}` : ''}
+      </motion.p>
+      <motion.h2
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.55, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        className="mt-1.5 max-w-[16ch] font-display text-[2.1rem] font-normal leading-[1.15] tracking-[-0.02em] text-foreground sm:max-w-none sm:text-[2.4rem]"
+      >
+        What shall we learn today?
+      </motion.h2>
+
+      {hasDocument && docTitle && (
+        <motion.p
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.35 }}
+          className="mt-3 max-w-[40ch] font-serif text-reading-sm text-muted-foreground"
+        >
+          “{docTitle}” is open — ask about any part of it.
+        </motion.p>
+      )}
+
+      <div className="mt-8 flex max-w-[640px] flex-wrap justify-center gap-2">
+        {SUGGESTIONS.map(({ icon: Icon, text }, i) => (
+          <motion.button
             key={text}
             type="button"
             onClick={() => onPick(text)}
-            className="group flex items-start gap-2.5 rounded-2xl border border-border/70 bg-surface px-3.5 py-3 text-left transition-colors hover:border-primary/40 hover:bg-surface"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.38 + i * 0.07, ease: [0.22, 1, 0.36, 1] }}
+            className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-surface px-3.5 py-2 text-left text-ui text-foreground/80 hover:border-primary/40 hover:text-foreground"
           >
-            <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary/80" strokeWidth={1.7} />
-            <span className="font-serif text-reading-sm text-foreground/80 group-hover:text-foreground">{text}</span>
-          </button>
+            <Icon className="h-4 w-4 shrink-0 text-primary/80" strokeWidth={1.7} />
+            <span className="text-pretty">{text}</span>
+          </motion.button>
         ))}
       </div>
-
-      <p className="mt-6 flex items-center justify-center gap-1.5 text-ui-sm text-muted-foreground/70">
-        <SquarePen className="h-3.5 w-3.5" strokeWidth={1.7} />
-        Everything is saved to your account — across devices.
-      </p>
     </div>
   )
 }
