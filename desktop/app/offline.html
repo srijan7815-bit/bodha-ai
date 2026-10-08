@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BODHA — offline</title>
+<style>
+  /* BODHA's offline page: paper, ink, and a retry.
+     It is a local file, so it always loads — the one page that cannot be offline. */
+  @font-face {
+    font-family: 'Noto Serif Devanagari';
+    src: url('fonts/NotoSerifDevanagari') format('truetype');
+    font-weight: 100 900;
+    font-display: swap;
+  }
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #FAF7F2;
+    color: #2B2723;
+    font-family: 'Source Serif 4', 'Iowan Old Style', Georgia, 'Devanagari Sangam MN', serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 24px;
+  }
+  main { max-width: 30rem; width: 100%; text-align: center; }
+  .mark {
+    font-family: 'Noto Serif Devanagari', Georgia, serif;
+    font-size: 4.5rem;
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+    margin: 0 0 1.25rem;
+    color: #2B2723;
+  }
+  h1 { font-size: 1.4rem; font-weight: 600; margin: 0 0 .6rem; letter-spacing: -0.01em; }
+  p { font-size: 1.02rem; line-height: 1.65; margin: 0 0 .9rem; color: #4A443D; }
+  .detail { font-size: .82rem; color: #857D73; margin-top: 1.6rem; }
+  button {
+    font: inherit;
+    font-size: 1rem;
+    margin-top: 1.4rem;
+    padding: .7rem 1.5rem;
+    border-radius: 999px;
+    border: 1px solid #C1633B;
+    background: #C1633B;
+    color: #FDFBF8;
+    cursor: pointer;
+    transition: transform .18s cubic-bezier(.22,1,.36,1), background .18s;
+  }
+  button:hover { background: #A95430; transform: translateY(-1px); }
+  button:active { transform: translateY(0); }
+  .waiting { display: block; margin-top: 1rem; font-size: .82rem; color: #857D73; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #23201C; color: #EFE9E1; }
+    .mark { color: #EFE9E1; }
+    p { color: #CFC6BA; }
+    .detail, .waiting { color: #9A9187; }
+    button { background: #C1633B; border-color: #C1633B; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark">बोध</div>
+  <h1>BODHA needs the network to think</h1>
+  <p>
+    The reasoning, the sources and the documents all live on the server, so BODHA
+    cannot answer while the connection is down. Your chats and library are safe —
+    nothing is lost by waiting.
+  </p>
+  <p class="waiting">BODHA is trying again by itself every few seconds.</p>
+  <button id="retry" type="button">Try now</button>
+  <p class="detail" id="detail"></p>
+</main>
+<script>
+  // The reason Chromium gave, so a firewall reads differently from a dead router.
+  var reason = new URLSearchParams(location.search).get('reason')
+  if (reason) document.getElementById('detail').textContent = 'Details: ' + reason
+
+  var shell = window.BodhaDesktop
+  document.getElementById('retry').addEventListener('click', function () {
+    if (shell && shell.retry) shell.retry()
+    else location.replace('https://bodha-ai-three.vercel.app/')
+  })
+  // If the machine comes back on its own, go back without being asked.
+  window.addEventListener('online', function () {
+    if (shell && shell.retry) shell.retry()
+  })
+</script>
+</body>
+</html>

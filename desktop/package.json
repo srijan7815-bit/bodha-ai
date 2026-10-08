@@ -1,0 +1,14 @@
+{
+  "name": "bodha-desktop",
+  "productName": "BODHA",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BODHA — बोध, an evidence-grounded research copilot for Indian Knowledge Systems. Desktop shell for Windows.",
+  "author": {
+    "name": "Srijan Singh and Parv Mishra",
+    "url": "https://github.com/srijan7815-bit"
+  },
+  "homepage": "https://bodha-ai-three.vercel.app",
+  "main": "app/main.js",
+  "license": "MIT"
+}
