@@ -73,6 +73,24 @@ export function loadCorpus(): Promise<Corpus> {
       // Vercel; both hold src/data (see outputFileTracingIncludes in next.config).
       const file = path.join(process.cwd(), 'src/data/iks/corpus.json.gz')
       const corpus = JSON.parse(gunzipSync(readFileSync(file)).toString()) as Corpus
+
+      // Repositories — databases and archives described in BODHA's own words
+      // (TKDL and the like). They live in a small JSON file beside the corpus so
+      // a rebuild of the primary texts never drops them.
+      try {
+        const extra = JSON.parse(readFileSync(path.join(process.cwd(), 'src/data/iks/repositories.json'), 'utf-8')) as {
+          works: Array<Omit<Work, 'passages' | 'words'>>
+          passages: Passage[]
+        }
+        for (const work of extra.works) {
+          if (corpus.works.some(w => w.id === work.id)) continue
+          const mine = extra.passages.filter(p => p.workId === work.id)
+          corpus.works.push({ ...work, passages: mine.length, words: mine.reduce((n, p) => n + p.text.split(/\s+/).length, 0) })
+          corpus.passages.push(...mine)
+        }
+      } catch (err) {
+        console.warn('[iks] repositories not loaded:', (err as Error).message)
+      }
       return corpus
     })
   }

@@ -77,7 +77,7 @@ export async function retrieveForQuestion(question: string): Promise<Retrieved> 
   const lines = hits.map((hit, index) => {
     const src = sources[index]
     return `[${src.id}] ${hit.work.title}${hit.work.sanskrit ? ` (${hit.work.sanskrit})` : ''} — ${src.ref}\n` +
-      `Translated by ${hit.work.translator} (${hit.work.year}). ${hit.work.domain}.\n${hit.passage.text}`
+      `${hit.work.domain.startsWith('Repository') ? 'Summarised by' : 'Translated by'} ${hit.work.translator} (${hit.work.year}). ${hit.work.domain}.\n${hit.passage.text}`
   })
 
   return {

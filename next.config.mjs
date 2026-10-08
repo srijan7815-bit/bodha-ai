@@ -10,9 +10,9 @@ const nextConfig = {
   // to be traced into the function bundle — Next cannot see it through
   // fs.readFileSync with a computed path.
   outputFileTracingIncludes: {
-    '/api/chats/[id]/messages': ['./src/data/iks/corpus.json.gz'],
-    '/api/iks/search': ['./src/data/iks/corpus.json.gz'],
-    '/iks': ['./src/data/iks/corpus.json.gz'],
+    '/api/chats/[id]/messages': ['./src/data/iks/corpus.json.gz', './src/data/iks/repositories.json'],
+    '/api/iks/search': ['./src/data/iks/corpus.json.gz', './src/data/iks/repositories.json'],
+    '/iks': ['./src/data/iks/corpus.json.gz', './src/data/iks/repositories.json'],
   },
   webpack: (config) => {
     config.resolve.alias = {

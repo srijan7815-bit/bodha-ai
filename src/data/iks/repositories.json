@@ -1,0 +1,62 @@
+{
+  "works": [
+    {
+      "id": "tkdl",
+      "title": "Traditional Knowledge Digital Library (TKDL)",
+      "sanskrit": "पारंपरिक ज्ञान डिजिटल पुस्तकालय",
+      "author": "CSIR and Ministry of AYUSH, Government of India",
+      "translator": "BODHA reference notes from tkdl.res.in and public reports",
+      "edition": "Repository notes — the database itself is not reproduced",
+      "year": 2026,
+      "domain": "Repository — traditional medicine & knowledge protection",
+      "extent": "7 reference notes",
+      "note": "India's defensive prior-art database of Ayurveda, Unani, Siddha, Sowa Rigpa and Yoga knowledge, built to stop wrongful patents (biopiracy). Full access is limited to patent offices; BODHA explains what it is and how it works.",
+      "sourceUrl": "https://tkdl.res.in",
+      "license": "Notes written by BODHA; the TKDL database is not copied"
+    }
+  ],
+  "passages": [
+    {
+      "id": "tkdl-1",
+      "workId": "tkdl",
+      "ref": "Overview",
+      "text": "The Traditional Knowledge Digital Library (TKDL) is India's digital record of its traditional medical knowledge. It was set up in 2001 as a joint initiative of the Council of Scientific and Industrial Research (CSIR) and the Ministry of AYUSH. It holds formulations and practices from Ayurveda, Unani, Siddha and Sowa Rigpa, along with Yoga, taken from classical texts. Its job is defensive: it works as searchable prior art, so that patent offices can see that a remedy is already described in India's own books before they grant anyone a patent on it."
+    },
+    {
+      "id": "tkdl-2",
+      "workId": "tkdl",
+      "ref": "Why it was built — biopiracy",
+      "text": "Biopiracy means winning a patent on knowledge that communities have used for generations. Cases such as a US patent on turmeric for healing wounds (granted in 1995, revoked after CSIR challenged it) and a European patent on a neem-based fungicide (later revoked) showed the problem. Each fight took years and a lot of money. A deeper difficulty sat underneath: the evidence lay in Sanskrit, Hindi, Arabic, Urdu and Tamil texts that foreign patent examiners could not read, so they could not find it. These cases came before TKDL and are the reason it was created."
+    },
+    {
+      "id": "tkdl-3",
+      "workId": "tkdl",
+      "ref": "How it is made searchable",
+      "text": "TKDL does more than scan old books. Verses from the original languages are read by scholars, rewritten as structured entries, and translated into five international languages — English, German, French, Japanese and Spanish — so that an examiner who reads none of the original languages can still find a match. Each entry records the formulation, its ingredients and the classical text it comes from, which turns an old manuscript line into something that can be cited as evidence."
+    },
+    {
+      "id": "tkdl-4",
+      "workId": "tkdl",
+      "ref": "The classification (TKRC)",
+      "text": "Patent offices search by the International Patent Classification (IPC), which had almost no room for traditional medicine. To bridge the gap, TKDL created the Traditional Knowledge Resource Classification (TKRC), a structured scheme that places traditional ideas — diseases, plants, preparations, methods — into categories patent examiners already use. Linking TKRC to the IPC led the IPC to add many more subgroups for traditional knowledge, which made searches far more precise."
+    },
+    {
+      "id": "tkdl-5",
+      "workId": "tkdl",
+      "ref": "Who can use it",
+      "text": "The full TKDL database is not open to the public. Patent offices can search it during examination after signing a TKDL Access Agreement that includes non-disclosure terms, and the TKDL website says full access is for patent offices only. General visitors can see a representative sample of Ayurvedic, Unani, Siddha and Sowa Rigpa formulations on tkdl.res.in. Reports in February 2026 put the number of patent offices with access at 18, after Brazil's patent office (INPI) joined through an agreement with CSIR."
+    },
+    {
+      "id": "tkdl-6",
+      "workId": "tkdl",
+      "ref": "What it has achieved",
+      "text": "When an applicant asks for a patent on something TKDL already documents, the examiner can cite the library as prior art. In practice this has led applicants to withdraw or narrow their claims, usually within weeks and at a small fraction of the cost of a court fight. India and many other countries treat it as a model for protecting traditional knowledge defensively, and it also acts as a deterrent: applicants know the evidence exists."
+    },
+    {
+      "id": "tkdl-7",
+      "workId": "tkdl",
+      "ref": "What it is not",
+      "text": "TKDL is a legal and scholarly tool, not a medical guide or a licence. It does not say whether a remedy is safe or effective, and it does not publish the formulations for anyone to copy. It also protects documented knowledge: knowledge that was never written down is harder to defend, which is why documentation matters. For the text itself, BODHA's shelf holds primary works such as the Sushruta Samhita; for the database, go to tkdl.res.in."
+    }
+  ]
+}

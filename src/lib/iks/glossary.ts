@@ -111,6 +111,10 @@ const PAIRS: Array<[string, string[]]> = [
   ['punishment', ['danda', 'penalty', 'justice']],
   ['justice', ['dharma', 'punishment', 'equity']],
   ['marriage', ['vivaha', 'wedding', 'wife', 'husband']],
+  ['biopiracy', ['patent', 'tkdl', 'traditional', 'knowledge']],
+  ['patent', ['biopiracy', 'tkdl', 'prior', 'traditional']],
+  ['turmeric', ['biopiracy', 'patent', 'tkdl']],
+  ['neem', ['biopiracy', 'patent', 'tkdl']],
   ['family', ['kula', 'household', 'kin']],
   ['son', ['putra', 'child', 'offspring']],
   ['woman', ['women', 'wife', 'female']],
@@ -207,4 +211,5 @@ export const WORK_HINTS: Record<string, string[]> = {
   lilavati: ['lilavati', 'bhaskara', 'brahmagupta', 'algebra', 'arithmetic', 'mathematics', 'ganita', 'zero'],
   thirukkural: ['kural', 'thirukkural', 'tirukkural', 'valluvar', 'tamil'],
   sushruta: ['sushruta', 'susruta', 'ayurveda', 'surgery', 'medicine', 'physician'],
+  tkdl: ['tkdl', 'tkrc', 'biopiracy', 'patent', 'patents', 'prior', 'turmeric', 'neem', 'basmati', 'unani', 'siddha', 'sowa', 'rigpa'],
 }
