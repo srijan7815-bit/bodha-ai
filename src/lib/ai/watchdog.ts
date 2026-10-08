@@ -1,7 +1,7 @@
 import { getStore } from '@/lib/store'
 import { completeOnce, configFor, configuredModels, noteProviderResult } from './provider'
 import { applySystemState } from './system-state'
-import { synthesize } from '@/lib/speech'
+import { fishLastError, synthesize } from '@/lib/speech'
 import type { ModelProbe, ServiceProbe, SystemState, WatchdogAction } from '@/lib/types'
 
 /**
@@ -66,7 +66,7 @@ async function probeTts(deep: boolean, previous?: ServiceProbe): Promise<Service
   // A real synthesis spends a little voice credit, so only a manual deep check does it.
   if (!deep) return previous ?? { ok: true, detail: 'Key present (run a deep check to test the voice)' }
   const audio = await synthesize('Namaste.', {}).catch(() => null)
-  return audio ? { ok: true, detail: 'Fish Audio is speaking' } : { ok: false, detail: 'Fish Audio did not answer — the device voice will read instead' }
+  return audio ? { ok: true, detail: 'Fish Audio is speaking' } : { ok: false, detail: `${fishLastError() ?? 'Fish Audio did not answer'} — the device voice reads instead` }
 }
 
 /** Ask the small model for a diagnosis and (optionally) a suggested repair. */

@@ -155,7 +155,7 @@ export function getProviderChain(opts: { live?: boolean } = {}): ProviderConfig[
   // sentence arrives fast; the smarter ones stay behind it as fallbacks.
   if (opts.live) {
     const quick = process.env.AI_LIVE_MODEL?.trim() || 'z-ai/glm-5.3-flash'
-    if (models.includes(quick)) models = [quick, ...models.filter(m => m !== quick)]
+    if (models.includes(quick)) models = [quick, ...models.filter(m => m !== quick && m !== primary), ...(primary !== quick ? [primary] : [])]
   }
 
   // Benched models keep their relative order, but wait behind the healthy ones.
@@ -171,7 +171,7 @@ export function getProviderChain(opts: { live?: boolean } = {}): ProviderConfig[
     apiKey: key,
     model,
     thinking,
-    firstByteMs: index === 0 ? Number(process.env.AI_FIRST_BYTE_MS ?? 6_000) : 5_000,
+    firstByteMs: opts.live ? (index === 0 ? 4_500 : 4_000) : index === 0 ? Number(process.env.AI_FIRST_BYTE_MS ?? 6_000) : 5_000,
     extraBody: tuneFor(model, thinking),
   }))
 }

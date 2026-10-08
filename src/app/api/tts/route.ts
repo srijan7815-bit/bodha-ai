@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuthUser } from '@/lib/firebase/server-auth'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
-import { chunkForSpeech, synthesize, type TtsProvider } from '@/lib/speech'
+import { chunkForSpeech, fishLastError, synthesize, type TtsProvider } from '@/lib/speech'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
   })
   if (!audio) {
     return NextResponse.json(
-      { error: 'BODHA\'s voice is taking a breath — the device voice will read this.', fallback: true },
+      { error: 'BODHA\'s voice is taking a breath — the device voice will read this.', fallback: true, reason: fishLastError() },
       { status: 503 },
     )
   }

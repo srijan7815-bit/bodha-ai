@@ -69,6 +69,33 @@ function fishReference(voice: string | null | undefined, text: string): string {
   return FISH_VOICES[raw] ?? FISH_VOICES.Aria
 }
 
+/**
+ * Fish's free tier answers 429 when too many requests arrive together. All
+ * synthesis on this server instance goes through a small gate, so read-aloud
+ * chunks and Live Mode sentences queue politely instead of failing each other.
+ */
+const FISH_SLOTS = Math.max(1, Number(process.env.FISH_CONCURRENCY) || 2)
+let fishBusy = 0
+const fishWaiting: Array<() => void> = []
+async function fishAcquire() {
+  if (fishBusy < FISH_SLOTS) {
+    fishBusy++
+    return
+  }
+  await new Promise<void>(resolve => fishWaiting.push(resolve))
+}
+function fishRelease() {
+  const next = fishWaiting.shift()
+  if (next) next()
+  else fishBusy--
+}
+
+let lastFishError: string | null = null
+/** The most recent reason Fish declined, for the health card and the TTS route. */
+export function fishLastError(): string | null {
+  return lastFishError
+}
+
 function toArrayBuffer(buf: Buffer): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
 }
@@ -98,7 +125,7 @@ export async function synthesize(
   const reference = fishReference(opts.voice, text)
   if (chunks.length === 1) return fishSynthesize(chunks[0], reference, timeout)
 
-  const parts = await mapLimit(chunks, 4, chunk => fishSynthesize(chunk, reference, timeout))
+  const parts = await mapLimit(chunks, FISH_SLOTS, chunk => fishSynthesize(chunk, reference, timeout))
   // A missing piece would silently cut the answer in half, so a partial result
   // is treated as no result.
   if (parts.some(part => !part)) return null
@@ -110,9 +137,11 @@ async function fishSynthesize(text: string, reference: string, timeout: number):
   const fishKey = process.env.FISH_AUDIO_API_KEY?.trim()
   if (!fishKey) return null
 
-  // One quick retry: Fish occasionally answers 429/5xx under load, and a second
-  // attempt a moment later nearly always lands. Anything else is final.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Retries: Fish answers 429/5xx under load, and a moment later it lands.
+  // Anything else (bad key, no credit) is final.
+  await fishAcquire()
+  try {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch(process.env.FISH_TTS_URL?.trim() || 'https://api.fish.audio/v1/tts', {
         method: 'POST',
@@ -129,18 +158,28 @@ async function fishSynthesize(text: string, reference: string, timeout: number):
       if (res.ok) {
         const bytes = await res.arrayBuffer()
         if (bytes.byteLength > 1000) {
+          lastFishError = null
           return { bytes, contentType: res.headers.get('content-type') || 'audio/mpeg', provider: 'fish' }
         }
+        lastFishError = 'Fish returned an empty clip'
         return null
       }
+      lastFishError = `Fish Audio answered HTTP ${res.status}${res.status === 402 ? ' (out of credit)' : res.status === 401 || res.status === 403 ? ' (key rejected)' : res.status === 429 ? ' (rate limited)' : ''}`
       console.warn('[speech] Fish Audio TTS declined:', res.status)
       if (res.status !== 429 && res.status < 500) return null
+      const wait = Number(res.headers.get('retry-after'))
+      await new Promise(r => setTimeout(r, Math.min(2000, wait > 0 ? wait * 1000 : 500 * (attempt + 1))))
+      continue
     } catch (err) {
+      lastFishError = `Fish Audio was unreachable (${(err as Error).message})`
       console.warn('[speech] Fish Audio TTS failed:', (err as Error).message)
     }
-    await new Promise(r => setTimeout(r, 450))
+    await new Promise(r => setTimeout(r, 400))
   }
   return null
+  } finally {
+    fishRelease()
+  }
 }
 
 /* ──────────────────────────────── STT ──────────────────────────────── */
