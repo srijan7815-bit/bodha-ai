@@ -31,6 +31,17 @@ const IDEAS = [
 const EASE = [0.22, 1, 0.36, 1] as const
 
 function save(file: OutFile) {
+  const fileName = file.name.split('/').pop() || 'file'
+  // Inside the Android app, hand the finished file to the wrapper, which puts it
+  // in the phone's Downloads folder. In a browser this is undefined and the
+  // ordinary blob download below runs exactly as before.
+  const native = (window as unknown as {
+    BodhaNative?: { saveFile?: (name: string, mime: string, base64: string) => void }
+  }).BodhaNative
+  if (typeof native?.saveFile === 'function') {
+    native.saveFile(fileName, file.mime, file.base64)
+    return
+  }
   const bytes = Uint8Array.from(atob(file.base64), c => c.charCodeAt(0))
   const url = URL.createObjectURL(new Blob([bytes], { type: file.mime }))
   const a = document.createElement('a')

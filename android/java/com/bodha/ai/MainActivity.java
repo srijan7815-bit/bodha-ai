@@ -3,15 +3,20 @@ package com.bodha.ai;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.DownloadManager;
 import android.content.ActivityNotFoundException;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
+import android.util.Base64;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -19,6 +24,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
@@ -27,12 +33,17 @@ import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.webkit.URLUtil;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+
 /**
- * BODHA for Android.
+ * BODHA for Android 1.1.
  *
  * The app is the same BODHA the browser gets — one codebase, one place to fix a
  * bug — hosted in a WebView that behaves like a first-class Android app rather
@@ -58,6 +69,7 @@ public class MainActivity extends Activity {
 
     private static final int REQUEST_MIC = 4101;
     private static final int REQUEST_FILE = 4102;
+    private static final int REQUEST_SAVE = 4103;
 
     private WebView web;
     private View progressBar;
@@ -68,6 +80,19 @@ public class MainActivity extends Activity {
     private PermissionRequest pendingPermission;
     private ValueCallback<Uri[]> pendingFiles;
     private boolean offlineShown = false;
+
+    /** Set only on Android 9 and older, where writing to Downloads needs a grant. */
+    private String[] pendingSave;
+
+    /**
+     * How BODHA works, split on purpose.
+     *
+     * The heavy work — models, retrieval, OCR, the code sandbox, building a PDF or
+     * a spreadsheet — happens on the server, where it belongs. The phone keeps the
+     * shell, the microphone, the file picker and the screen, and its only job in a
+     * download is to move bytes into Downloads. Nothing is rendered or converted
+     * here, and nothing is kept in memory after a save.
+     */
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -220,6 +245,7 @@ public class MainActivity extends Activity {
 
         web.setWebViewClient(new BodhaWebViewClient());
         web.setWebChromeClient(new BodhaChromeClient());
+        web.setDownloadListener(new BodhaDownloadListener());
         web.addJavascriptInterface(new Bridge(), "BodhaNative");
         // The theme is a page-level choice, so the bars are re-checked whenever
         // the WebView stops scrolling — cheap, and it keeps the chrome in step.
@@ -334,7 +360,138 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Saving a file.
+     *
+     * The heavy work of producing a file — a sandbox result, an exported page —
+     * happens on the server; the phone's only job is to put it in Downloads.
+     * Android's DownloadManager does that, with the system's own progress
+     * notification, so nothing is held in memory here.
+     */
+    private final class BodhaDownloadListener implements DownloadListener {
+        @Override
+        public void onDownloadStart(String url, String userAgent, String contentDisposition,
+                                    String mimeType, long contentLength) {
+            // A file the page built in memory has no address to fetch, so it is
+            // read back from the page and handed to the same save path.
+            if (url != null && url.startsWith("blob:")) {
+                String name = URLUtil.guessFileName(url, contentDisposition, mimeType);
+                if (name == null || name.isEmpty() || "downloadfile.bin".equals(name) || !name.contains(".")) {
+                    name = "bodha-" + System.currentTimeMillis() + extensionFor(mimeType);
+                }
+                saveBlob(url, name, mimeType);
+                return;
+            }
+            try {
+                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                request.setMimeType(mimeType);
+                request.addRequestHeader("User-Agent", userAgent);
+                request.addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url));
+                String name = URLUtil.guessFileName(url, contentDisposition, mimeType);
+                request.setTitle(name);
+                request.setDescription("Saving from BODHA");
+                request.allowScanningByMediaScanner();
+                request.setNotificationVisibility(
+                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
+                DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                if (manager == null) throw new IllegalStateException("no download manager");
+                manager.enqueue(request);
+                Toast.makeText(MainActivity.this, "Saving to Downloads", Toast.LENGTH_SHORT).show();
+            } catch (Exception err) {
+                // No download manager, or the URL is not http(s): hand it to the browser.
+                try {
+                    openExternally(Uri.parse(url));
+                } catch (Exception ignored) {
+                    Toast.makeText(MainActivity.this, "That file could not be saved.", Toast.LENGTH_SHORT).show();
+                }
+            }
+        }
+    }
+
+    /**
+     * Reads a blob: URL back out of the page and saves it.
+     *
+     * The page already holds the bytes (a finished document from BODHA's computer),
+     * so this costs one copy and no network at all.
+     */
+    private void saveBlob(String blobUrl, String name, String mime) {
+        String js = "(function(){fetch(" + quote(blobUrl) + ").then(function(r){return r.arrayBuffer();})"
+                + ".then(function(b){var v=new Uint8Array(b),s='',c=0x8000;"
+                + "for(var i=0;i<v.length;i+=c){s+=String.fromCharCode.apply(null,v.subarray(i,i+c));}"
+                + "window.BodhaNative.saveFile(" + quote(name) + "," + quote(mime == null ? "" : mime) + ",btoa(s));})"
+                + ".catch(function(){window.BodhaNative.saveFailed();});})()";
+        web.evaluateJavascript(js, null);
+    }
+
+    /** A JavaScript string literal for the injected snippet. */
+    private static String quote(String value) {
+        StringBuilder out = new StringBuilder("\"");
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '"' || c == '\\') out.append('\\').append(c);
+            else if (c == '\n') out.append("\\n");
+            else if (c == '\r') out.append("\\r");
+            else if (c < 0x20) out.append(' ');
+            else out.append(c);
+        }
+        return out.append('"').toString();
+    }
+
+    private static String extensionFor(String mime) {
+        if (mime == null) return ".bin";
+        String type = mime.toLowerCase();
+        if (type.contains("pdf")) return ".pdf";
+        if (type.contains("wordprocessingml") || type.contains("msword")) return ".docx";
+        if (type.contains("spreadsheetml") || type.contains("ms-excel")) return ".xlsx";
+        if (type.contains("presentationml") || type.contains("powerpoint")) return ".pptx";
+        if (type.contains("zip")) return ".zip";
+        if (type.contains("json")) return ".json";
+        if (type.contains("csv")) return ".csv";
+        if (type.contains("html")) return ".html";
+        if (type.contains("markdown")) return ".md";
+        if (type.startsWith("text/")) return ".txt";
+        if (type.contains("png")) return ".png";
+        if (type.contains("jpeg") || type.contains("jpg")) return ".jpg";
+        return ".bin";
+    }
+
+    /** Writes bytes into the phone's Downloads, on any Android this app runs on. */
+    private void writeToDownloads(String name, String mime, byte[] bytes) throws Exception {
+        String type = (mime == null || mime.isEmpty()) ? "application/octet-stream" : mime;
+        if (Build.VERSION.SDK_INT >= 29) {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Downloads.DISPLAY_NAME, name);
+            values.put(MediaStore.Downloads.MIME_TYPE, type);
+            values.put(MediaStore.Downloads.IS_PENDING, 1);
+            Uri target = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (target == null) throw new IllegalStateException("Downloads is not writable");
+            try (OutputStream out = getContentResolver().openOutputStream(target)) {
+                if (out == null) throw new IllegalStateException("Downloads is not writable");
+                out.write(bytes);
+            } catch (Exception err) {
+                getContentResolver().delete(target, null, null);
+                throw err;
+            }
+            values.clear();
+            values.put(MediaStore.Downloads.IS_PENDING, 0);
+            getContentResolver().update(target, values, null, null);
+            return;
+        }
+        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if (dir == null) throw new IllegalStateException("no Downloads folder");
+        if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Downloads is not writable");
+        File file = new File(dir, name);
+        try (FileOutputStream out = new FileOutputStream(file)) {
+            out.write(bytes);
+        }
+    }
+
     /* ──────────────────────────── small helpers ──────────────────────────── */
+
+    private void toast(String message) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
 
     private void openExternally(Uri url) {
         try {
@@ -385,6 +542,47 @@ public class MainActivity extends Activity {
 
     /** The one hook the offline page needs. */
     private class Bridge {
+        /**
+         * Saves a file the page has already built. Called by BODHA's computer when
+         * a document is finished — the bytes are produced on the server, so the
+         * phone only has to put them in Downloads.
+         */
+        @JavascriptInterface
+        public void saveFile(final String name, final String mime, final String base64) {
+            if (base64 == null || base64.isEmpty()) return;
+            byte[] bytes;
+            try {
+                bytes = Base64.decode(base64, Base64.DEFAULT);
+            } catch (IllegalArgumentException err) {
+                toast("That file could not be read.");
+                return;
+            }
+            final String fileName = (name == null || name.trim().isEmpty()) ? "bodha-file" : name.trim();
+            main.post(() -> {
+                if (Build.VERSION.SDK_INT < 29
+                        && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    // The old way of writing to Downloads needs a grant; ask, then finish.
+                    pendingSave = new String[] { fileName, mime, base64 };
+                    requestPermissions(
+                            new String[] { Manifest.permission.WRITE_EXTERNAL_STORAGE }, REQUEST_SAVE);
+                    return;
+                }
+                try {
+                    writeToDownloads(fileName, mime, bytes);
+                    toast("Saved to Downloads: " + fileName);
+                } catch (Exception err) {
+                    toast("That file could not be saved.");
+                }
+            });
+        }
+
+        /** The page could not read its own file back; say so instead of failing silently. */
+        @JavascriptInterface
+        public void saveFailed() {
+            main.post(() -> toast("That file could not be saved."));
+        }
+
         @JavascriptInterface
         public void retry() {
             main.post(() -> {
@@ -425,9 +623,33 @@ public class MainActivity extends Activity {
         if (requestCode == REQUEST_MIC && pendingPermission != null) {
             boolean granted = grantResults.length > 0
                     && grantResults[0] == PackageManager.PERMISSION_GRANTED;
-            if (granted) pendingPermission.grant(pendingPermission.getResources());
-            else pendingPermission.deny();
+            if (granted) {
+                pendingPermission.grant(pendingPermission.getResources());
+            } else {
+                pendingPermission.deny();
+                Toast.makeText(this,
+                        "BODHA needs the microphone for dictation. You can allow it in Settings › Apps › BODHA › Permissions.",
+                        Toast.LENGTH_LONG).show();
+            }
             pendingPermission = null;
+            return;
+        }
+        if (requestCode == REQUEST_SAVE) {
+            String[] save = pendingSave;
+            pendingSave = null;
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (save == null) return;
+            if (!granted) {
+                toast("BODHA needs storage access to save files. You can allow it in Settings › Apps › BODHA › Permissions.");
+                return;
+            }
+            try {
+                writeToDownloads(save[0], save[1], Base64.decode(save[2], Base64.DEFAULT));
+                toast("Saved to Downloads: " + save[0]);
+            } catch (Exception err) {
+                toast("That file could not be saved.");
+            }
             return;
         }
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);

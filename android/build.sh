@@ -28,7 +28,7 @@ BT="$SDK/bt/android-14"
 PLATFORM="$SDK/pf/android-34/android.jar"
 
 APP_NAME="bodha"
-VERSION="1.0"
+VERSION="1.1"
 BUILD_DIR="$HERE/build"
 OUT_DIR="$HERE/out"
 KEYSTORE="$HERE/keystore/bodha-release.jks"
@@ -60,9 +60,9 @@ say "▸ linking resources and manifest"
   -o "$BUILD_DIR/base.apk" \
   -I "$PLATFORM" \
   --manifest "$HERE/AndroidManifest.xml" \
-  --min-sdk-version 24 \
+  --min-sdk-version 23 \
   --target-sdk-version 34 \
-  --version-code 1 \
+  --version-code 2 \
   --version-name "$VERSION" \
   --java "$BUILD_DIR/gen" \
   -A "$HERE/assets" \
@@ -83,7 +83,7 @@ javac -nowarn -encoding UTF-8 -source 11 -target 11 \
 say "▸ dexing"
 "$BT/d8" \
   --lib "$PLATFORM" \
-  --min-api 24 \
+  --min-api 23 \
   --output "$BUILD_DIR/dex" \
   $(find "$BUILD_DIR/classes" -name '*.class')
 
