@@ -1,3 +1,4 @@
+import { gatherWeb } from '@/lib/web'
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { retrieveForQuestion } from '@/lib/iks'
@@ -121,7 +122,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   const question = isRegenerate
     ? ([...history].reverse().find(m => m.role === 'user')?.content ?? '')
     : (parsed.data.content ?? '')
-  const shelf = await retrieveForQuestion(question)
+  const [shelf, web] = await Promise.all([retrieveForQuestion(question), gatherWeb(question, { live: parsed.data.live })])
 
   const encoder = new TextEncoder()
   const abortCtl = new AbortController()
@@ -141,7 +142,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       try {
         if (!isRegenerate) send({ t: 'user', message: userMessage })
         if (!isRegenerate && shelf.sources.length) send({ t: 'sources', items: shelf.sources })
-        for await (const chunk of streamTutorReply({ history, document, preferred, iksContext: shelf.context, live: parsed.data.live }, abortCtl.signal)) {
+        for await (const chunk of streamTutorReply({ history, document, preferred, iksContext: shelf.context, live: parsed.data.live, webContext: web.context, webNotice: web.notice }, abortCtl.signal)) {
           if (chunk.kind === 'delta') {
             full += chunk.text
             send({ t: 'delta', v: chunk.text })

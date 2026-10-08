@@ -234,7 +234,7 @@ export async function completeOnce(
 export async function* streamCompletion(
   cfg: ProviderConfig,
   messages: TutorMessage[],
-  opts: { maxTokens?: number; temperature?: number; signal?: AbortSignal; firstByteMs?: number } = {},
+  opts: { maxTokens?: number; temperature?: number; signal?: AbortSignal; firstByteMs?: number; onFinish?: (reason: string) => void } = {},
 ): AsyncGenerator<string> {
   const body: Record<string, unknown> = {
     model: cfg.model,
@@ -316,12 +316,15 @@ export async function* streamCompletion(
         const payload = trimmed.slice(5).trim()
         if (!payload || payload === '[DONE]') continue
 
-        let json: { choices?: Array<{ delta?: { content?: string | null; reasoning_content?: string | null } }> }
+        let json: { choices?: Array<{ finish_reason?: string | null; delta?: { content?: string | null; reasoning_content?: string | null } }> }
         try {
           json = JSON.parse(payload)
         } catch {
           continue
         }
+
+        const finish = json.choices?.[0]?.finish_reason
+        if (finish && opts.onFinish) opts.onFinish(finish)
 
         // Reasoning traces are never shown to the student.
         const delta = json.choices?.[0]?.delta

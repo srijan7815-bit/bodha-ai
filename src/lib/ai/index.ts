@@ -40,6 +40,9 @@ export interface TutorContext {
   iksContext?: string | null
   /** The answer will be spoken in Live Mode: shorter, no Markdown. */
   live?: boolean
+  /** Pages, GitHub and search results fetched for this question. */
+  webContext?: string | null
+  webNotice?: string | null
 }
 
 const PRETTY: Record<string, string> = {
@@ -74,6 +77,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
     documentText: ctx.document?.textContent,
     iksContext: ctx.iksContext,
     live: ctx.live,
+    webContext: ctx.webContext,
   })
 
   const recent = ctx.history.slice(-HISTORY_LIMIT)
@@ -95,6 +99,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
     return
   }
 
+  if (ctx.webNotice) yield { kind: 'notice', text: ctx.webNotice }
   let sawContent = false
   // Models that had to give way, remembered by their identity *and* by the name
   // the student knows them by — a custom endpoint should be named in the notice
@@ -106,7 +111,9 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
     let produced = false
 
     try {
-      for await (const delta of streamCompletion(cfg, messages, { signal, maxTokens: ctx.live ? 450 : 2048, temperature: 0.6 })) {
+      let finish = ''
+      let spoken = ''
+      for await (const delta of streamCompletion(cfg, messages, { signal, maxTokens: ctx.live ? 900 : 4096, temperature: 0.6, onFinish: r => (finish = r) })) {
         if (!produced) {
           produced = true
           sawContent = true
@@ -119,7 +126,24 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
             }
           }
         }
+        spoken += delta
         yield { kind: 'delta', text: delta }
+      }
+
+      // The model stopped because it ran out of room, not because it was done.
+      // Ask it to carry on from exactly there — twice at most — so an answer
+      // never ends mid-sentence.
+      for (let more = 0; more < 2 && produced && finish === 'length' && !ctx.live && !signal?.aborted; more++) {
+        finish = ''
+        const carry: TutorMessage[] = [
+          ...messages,
+          { role: 'assistant', content: spoken },
+          { role: 'user', content: 'Continue exactly where you stopped, mid-sentence if needed. Do not repeat anything, do not greet, do not summarise.' },
+        ]
+        for await (const delta of streamCompletion(cfg, carry, { signal, maxTokens: 4096, temperature: 0.6, onFinish: r => (finish = r) })) {
+          spoken += delta
+          yield { kind: 'delta', text: delta }
+        }
       }
 
       if (!produced) {
@@ -128,7 +152,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
         // same model once without streaming before moving down the chain.
         console.warn(`[ai] ${cfg.model} streamed no content — retrying without streaming`)
         try {
-          const text = await completeOnce(cfg, messages, { signal, maxTokens: ctx.live ? 450 : 2048, temperature: 0.6 })
+          const text = await completeOnce(cfg, messages, { signal, maxTokens: ctx.live ? 900 : 4096, temperature: 0.6 })
           if (text) {
             sawContent = true
             noteProviderResult(providerKey(cfg), true)
