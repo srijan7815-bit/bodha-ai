@@ -41,7 +41,7 @@ export function browserTtsSupported(): boolean {
 /** Strip markdown so the spoken words sound natural instead of literal. */
 export function cleanForSpeech(text: string): string {
   return String(text || '')
-    .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0E\uFE0F\u200D\u20E3\u{1F3FB}-\u{1F3FF}]/gu, '')
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0E\uFE0F\u200D\u20E3\u{1F3FB}-\u{1F3FF}\u2600-\u27BF\u2B00-\u2BFF]/gu, '')
     .replace(/```[\s\S]*?```/g, ' code block ')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' image ')
