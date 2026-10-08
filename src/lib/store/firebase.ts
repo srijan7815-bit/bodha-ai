@@ -1,4 +1,5 @@
 import type {
+  SystemState,
   Chat,
   DocumentMeta,
   DocumentRecord,
@@ -382,6 +383,17 @@ export class FirebaseStore implements Store {
       return Buffer.alloc(0)
     })
     return Buffer.concat(parts)
+  }
+
+  async getSystemState(): Promise<SystemState | null> {
+    const admin = await this.admin()
+    const snap = await admin.db.collection('system').doc('state').get()
+    return snap.exists ? (snap.data() as SystemState) : null
+  }
+
+  async saveSystemState(state: SystemState): Promise<void> {
+    const admin = await this.admin()
+    await admin.db.collection('system').doc('state').set(JSON.parse(JSON.stringify(state)))
   }
 
   private uploadRef(admin: AdminServices, userId: string, uploadId: string) {

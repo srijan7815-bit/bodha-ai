@@ -90,6 +90,34 @@ export function noteProviderResult(model: string, ok: boolean) {
   demoted.set(model, Date.now() + DEMOTE_MS)
 }
 
+/**
+ * Repairs made by the watchdog: models it has taken out of rotation after
+ * repeated failed checks, and one it has moved to the front. Always applied on
+ * top of the configured chain, never instead of it.
+ */
+let overrides: { disabled: string[]; primary: string | null } = { disabled: [], primary: null }
+
+export function setChainOverrides(next: { disabled: string[]; primary: string | null }) {
+  overrides = next
+}
+
+/** Every model the chain is configured with, in configured order. */
+export function configuredModels(): string[] {
+  const primary = process.env.AI_MODEL?.trim() || DEFAULT_MODEL
+  const fromEnv = process.env.AI_MODEL_FALLBACKS?.split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  return [primary, ...(fromEnv?.length ? fromEnv : DEFAULT_FALLBACKS).filter(m => m !== primary)]
+}
+
+/** A ready-to-call config for any one model (used by health probes). */
+export function configFor(model: string): ProviderConfig | null {
+  const key = apiKey()
+  if (!key) return null
+  const thinking = process.env.AI_THINKING === 'true'
+  return { name: 'nvidia' as const, baseUrl: baseUrl(), apiKey: key, model, thinking, firstByteMs: 8_000, extraBody: tuneFor(model, thinking) }
+}
+
 export function providerHealth(): Array<{ model: string; state: 'ready' | 'benched' }> {
   const now = Date.now()
   return getProviderChain().map(cfg => ({
@@ -114,7 +142,14 @@ export function getProviderChain(): ProviderConfig[] {
   const fallbacks = fromEnv?.length ? fromEnv : DEFAULT_FALLBACKS
 
   const thinking = process.env.AI_THINKING === 'true'
-  const models = [primary, ...fallbacks.filter(m => m !== primary)]
+  let models = [primary, ...fallbacks.filter(m => m !== primary)]
+
+  // Apply the watchdog's repairs — but never leave the chain empty.
+  const usable = models.filter(m => !overrides.disabled.includes(m))
+  if (usable.length) models = usable
+  if (overrides.primary && models.includes(overrides.primary)) {
+    models = [overrides.primary, ...models.filter(m => m !== overrides.primary)]
+  }
 
   // Benched models keep their relative order, but wait behind the healthy ones.
   const now = Date.now()

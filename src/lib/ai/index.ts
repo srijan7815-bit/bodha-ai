@@ -1,3 +1,4 @@
+import { syncSystemState } from './system-state'
 import type { DocumentRecord, Message, TutorMessage } from '@/lib/types'
 import { buildSystemMessages } from './prompt'
 import {
@@ -66,6 +67,8 @@ export function aiStatus(): { provider: string; model: string; chain: string[] }
 }
 
 export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal): AsyncGenerator<TutorChunk> {
+  // Pick up any repairs the watchdog has made to the model chain.
+  await syncSystemState()
   const messages: TutorMessage[] = buildSystemMessages({
     documentTitle: ctx.document?.title,
     documentText: ctx.document?.textContent,

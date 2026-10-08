@@ -204,6 +204,9 @@ export interface Store {
   listDocuments(userId: string): Promise<DocumentMeta[]>
   /** `content: false` skips reading the raw file parts (metadata + text only). */
   getDocument(id: string, ownerId?: string, opts?: { content?: boolean }): Promise<DocumentRecord | null>
+  /** The watchdog's last report and the repairs it has made. */
+  getSystemState(): Promise<SystemState | null>
+  saveSystemState(state: SystemState): Promise<void>
   /** Large uploads arrive in parts; each is parked here until the last one lands. */
   saveUploadPart(userId: string, uploadId: string, index: number, bytes: Buffer): Promise<void>
   /** Joins the parts of an upload in order and deletes them. Null if any part is missing. */
@@ -296,4 +299,39 @@ export function publicSettings(settings: UserSettings | null): PublicSettings {
         }
       : null,
   }
+}
+/** One live test of one answering model. */
+export interface ModelProbe {
+  model: string
+  ok: boolean
+  ms: number
+  /** Rate-limited, not broken — never counts against a model. */
+  busy?: boolean
+  error?: string
+}
+
+export interface ServiceProbe {
+  ok: boolean
+  detail: string
+}
+
+export interface WatchdogAction {
+  at: string
+  action: 'disable_model' | 'enable_model' | 'promote_model' | 'unpromote_model'
+  target: string
+  reason: string
+  by: 'rules' | 'ai'
+}
+
+/** What the watchdog last saw, and the small repairs it made. */
+export interface SystemState {
+  checkedAt: string
+  overall: 'ok' | 'fixed' | 'degraded'
+  summary: string
+  disabledModels: string[]
+  promoted: string | null
+  strikes: Record<string, number>
+  models: ModelProbe[]
+  services: { stt: ServiceProbe; tts: ServiceProbe; storage: ServiceProbe }
+  actions: WatchdogAction[]
 }

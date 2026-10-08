@@ -93,6 +93,21 @@ export default function AppShell({ children }: AppShellProps) {
     setDrawerOpen(false)
   }, [pathname])
 
+  // The watchdog: while BODHA is open, ask for a health check every few minutes.
+  // The server skips it if a recent one exists, so many tabs cost one run.
+  useEffect(() => {
+    const ping = () => {
+      if (document.visibilityState !== 'visible') return
+      void authFetch('/api/watchdog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {})
+    }
+    const first = setTimeout(ping, 20_000)
+    const every = setInterval(ping, 5 * 60 * 1000)
+    return () => {
+      clearTimeout(first)
+      clearInterval(every)
+    }
+  }, [])
+
   const toggleTheme = useCallback(() => {
     setDark(prev => {
       const next = !prev

@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { verifyPassword } from '@/lib/auth'
 import type {
+  SystemState,
   Chat,
   DocumentMeta,
   DocumentRecord,
@@ -265,6 +266,16 @@ export class FileStore implements Store {
         ...meta,
         hasText: typeof textContent === 'string' && textContent.trim().length > 0,
       }))
+  }
+
+  private systemState: SystemState | null = null
+
+  async getSystemState(): Promise<SystemState | null> {
+    return this.systemState
+  }
+
+  async saveSystemState(state: SystemState): Promise<void> {
+    this.systemState = state
   }
 
   private uploadDir(userId: string, uploadId: string) {

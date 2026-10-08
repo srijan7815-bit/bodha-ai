@@ -1,5 +1,6 @@
 'use client'
 
+import SystemHealth from '@/components/SystemHealth'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
@@ -302,6 +303,8 @@ export default function SettingsView() {
         <p className="mt-1.5 text-ui text-muted-foreground">
           Your account, your voice, and your own model.
         </p>
+
+        <SystemHealth />
 
         {/* ── Your own model ─────────────────────────────────────────────── */}
         <Section
