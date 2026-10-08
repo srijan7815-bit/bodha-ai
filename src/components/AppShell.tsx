@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
-import { BookMarked, BookOpen, Boxes, LogOut, Menu, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Sun, Trash2 } from 'lucide-react'
+import { BookMarked, BookOpen, Boxes, LogOut, Monitor, Menu, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Sun, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/components/AuthProvider'
 import { BodhaMark, BodhaWordmark } from '@/components/Brand'
@@ -41,6 +41,7 @@ const NAV = [
   { href: '/chat', label: 'Chats', icon: MessageSquare },
   { href: '/library', label: 'Library', icon: BookOpen },
   { href: '/iks', label: 'Knowledge Shelf', icon: BookMarked },
+  { href: '/computer', label: 'Computer', icon: Monitor },
   { href: '/sandbox', label: 'Sandbox', icon: Boxes },
   { href: '/settings', label: 'Settings', icon: Settings },
 ]

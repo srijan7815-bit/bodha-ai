@@ -46,7 +46,7 @@ async function assertPublic(url: URL): Promise<void> {
 }
 
 /** fetch() that re-checks every redirect hop against the private-network rule. */
-async function safeFetch(rawUrl: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
+export async function safeFetch(rawUrl: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
   let url = new URL(rawUrl)
   for (let hop = 0; hop < 4; hop++) {
     await assertPublic(url)
