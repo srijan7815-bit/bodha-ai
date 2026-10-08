@@ -85,7 +85,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
 
   // Their model first when they asked for it, then ours as a safety net: a
   // student whose own endpoint is down should still get a lesson, not an error.
-  const own = getProviderChain()
+  const own = getProviderChain({ live: ctx.live })
   const preferred = ctx.preferred ?? []
   const chain = [...preferred, ...own.filter(bodha => !preferred.some(p => providerKey(p) === providerKey(bodha)))]
 
@@ -106,7 +106,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
     let produced = false
 
     try {
-      for await (const delta of streamCompletion(cfg, messages, { signal, maxTokens: 2048, temperature: 0.6 })) {
+      for await (const delta of streamCompletion(cfg, messages, { signal, maxTokens: ctx.live ? 450 : 2048, temperature: 0.6 })) {
         if (!produced) {
           produced = true
           sawContent = true
@@ -128,7 +128,7 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
         // same model once without streaming before moving down the chain.
         console.warn(`[ai] ${cfg.model} streamed no content — retrying without streaming`)
         try {
-          const text = await completeOnce(cfg, messages, { signal, maxTokens: 2048, temperature: 0.6 })
+          const text = await completeOnce(cfg, messages, { signal, maxTokens: ctx.live ? 450 : 2048, temperature: 0.6 })
           if (text) {
             sawContent = true
             noteProviderResult(providerKey(cfg), true)

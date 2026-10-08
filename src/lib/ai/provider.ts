@@ -131,7 +131,7 @@ export function providerHealth(): Array<{ model: string; state: 'ready' | 'bench
  * model can take a while to warm up); the fallbacks get a short leash so the
  * student never waits long. Models benched by a recent stall move to the back.
  */
-export function getProviderChain(): ProviderConfig[] {
+export function getProviderChain(opts: { live?: boolean } = {}): ProviderConfig[] {
   const key = apiKey()
   if (!key) return []
 
@@ -149,6 +149,13 @@ export function getProviderChain(): ProviderConfig[] {
   if (usable.length) models = usable
   if (overrides.primary && models.includes(overrides.primary)) {
     models = [overrides.primary, ...models.filter(m => m !== overrides.primary)]
+  }
+
+  // Live Mode is a conversation: the quick model goes first so the first
+  // sentence arrives fast; the smarter ones stay behind it as fallbacks.
+  if (opts.live) {
+    const quick = process.env.AI_LIVE_MODEL?.trim() || 'z-ai/glm-5.3-flash'
+    if (models.includes(quick)) models = [quick, ...models.filter(m => m !== quick)]
   }
 
   // Benched models keep their relative order, but wait behind the healthy ones.

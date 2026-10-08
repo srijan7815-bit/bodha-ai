@@ -193,8 +193,8 @@ export async function transcribeBlob(raw: Blob, language?: string): Promise<stri
 /* ─── One live turn ────────────────────────────────────────────────────────── */
 
 const VAD = {
-  silenceMs: 600, // stop this long after speech ends
-  minSpeechMs: 300, // ignore blips (coughs, clicks, doors)
+  silenceMs: 430, // stop this long after speech ends
+  minSpeechMs: 220, // ignore blips (coughs, clicks, doors)
   maxTurnMs: 30_000, // hard stop so a turn cannot run forever
   // Thresholds are RELATIVE to the measured noise floor, not absolute — a fixed
   // gate fails on far-field mics, where speech can peak below what is sensible

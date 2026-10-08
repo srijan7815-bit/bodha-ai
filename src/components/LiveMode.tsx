@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion, useMotionValue, useTransform, animate } from 'framer-motion'
-import { ChevronUp, Mic, MicOff, PhoneOff, Square, X } from 'lucide-react'
+import { Captions, ChevronUp, Mic, MicOff, PhoneOff, Square, X } from 'lucide-react'
 import BodhaOrb, { type OrbState } from '@/components/BodhaOrb'
 import LiveTranscript, { type LiveTurn } from '@/components/LiveTranscript'
 import { pushMicLevel, resumeOrbAudio, voiceOutputLevel } from '@/lib/orbAudio'
@@ -740,7 +740,7 @@ export default function LiveMode({
               {error && <p className="mt-3 max-w-sm text-ui text-amber-300/80">{error}</p>}
 
               {/* Mute · Interrupt · End */}
-              <div className="absolute bottom-20 flex items-center gap-4">
+              <div className="absolute bottom-20 flex items-center gap-3 sm:gap-4">
                 <button
                   onClick={toggleMute}
                   className={`flex h-14 w-14 items-center justify-center rounded-full border transition-colors ${
@@ -753,6 +753,20 @@ export default function LiveMode({
                   aria-pressed={muted}
                 >
                   {muted ? <MicOff size={21} /> : <Mic size={21} />}
+                </button>
+
+                <button
+                  onClick={toggleExpanded}
+                  className={`flex h-14 w-14 items-center justify-center rounded-full border transition-colors ${
+                    expanded
+                      ? 'border-primary/60 bg-primary/20 text-white'
+                      : 'border-white/15 bg-white/[0.06] text-white/85 hover:bg-white/[0.1]'
+                  }`}
+                  title={expanded ? 'Hide conversation panel' : 'Show conversation panel'}
+                  aria-label={expanded ? 'Hide conversation panel' : 'Show conversation panel'}
+                  aria-pressed={expanded}
+                >
+                  <Captions size={21} />
                 </button>
 
                 <button
@@ -776,7 +790,7 @@ export default function LiveMode({
               </div>
 
               <p className="pb-safe-bottom absolute bottom-7 flex items-center gap-1.5 text-ui-xs uppercase tracking-[0.14em] text-white/30">
-                Mute · Interrupt · End
+                Mute · Panel · Interrupt · End
               </p>
             </>
           )}

@@ -41,6 +41,7 @@ export function browserTtsSupported(): boolean {
 /** Strip markdown so the spoken words sound natural instead of literal. */
 export function cleanForSpeech(text: string): string {
   return String(text || '')
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0E\uFE0F\u200D\u20E3\u{1F3FB}-\u{1F3FF}]/gu, '')
     .replace(/```[\s\S]*?```/g, ' code block ')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' image ')
@@ -266,6 +267,9 @@ export function speakStream(opts: SpeakStreamOptions): { cancel: () => void } {
       }
 
       let frame = await prime()
+      // Start the second sentence's synthesis immediately, before the first has
+      // even finished downloading, so playback never waits on the network.
+      let ahead: Promise<{ text: string | null; clip: Promise<SpeechClip | null> | null }> | null = frame.text ? prime() : null
 
       while (alive() && frame.text) {
         const clip: SpeechClip | null = frame.clip ? await frame.clip : null
@@ -275,8 +279,7 @@ export function speakStream(opts: SpeakStreamOptions): { cancel: () => void } {
         }
 
         const spoken: string = frame.text
-        // Start the NEXT sentence synthesising while this one plays.
-        const nextFrame = prime()
+        const nextFrame = ahead ?? prime()
 
         if (clip && token === currentToken) {
           opts.onStart?.()
@@ -295,6 +298,7 @@ export function speakStream(opts: SpeakStreamOptions): { cancel: () => void } {
         }
 
         frame = await nextFrame
+        ahead = frame.text ? prime() : null
       }
     } catch {
       /* never throw at the caller */

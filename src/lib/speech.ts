@@ -90,6 +90,8 @@ export async function synthesize(
   opts: { voice?: string | null; language?: string; timeoutMs?: number; provider?: TtsProvider } = {},
 ): Promise<Synthesized | null> {
   const timeout = opts.timeoutMs ?? 25_000
+  // Emojis and pictograms are never read aloud.
+  text = text.replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0E\uFE0F\u200D\u20E3\u{1F3FB}-\u{1F3FF}]/gu, '')
   const chunks = chunkForSpeech(text)
   if (!chunks.length) return null
 
