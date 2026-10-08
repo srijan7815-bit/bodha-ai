@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
-import { BookMarked, BookOpen, Boxes, LogOut, Menu, MessageSquare, Moon, Plus, Search, Settings, Sun, Trash2 } from 'lucide-react'
+import { BookMarked, BookOpen, Boxes, LogOut, Menu, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, Plus, Search, Settings, Sun, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/components/AuthProvider'
 import { BodhaMark, BodhaWordmark } from '@/components/Brand'
@@ -30,8 +30,11 @@ interface ShellApi {
   newChat: () => void
   dark: boolean
   toggleTheme: () => void
+  /** Desktop only: the permanent sidebar can be tucked away. */
+  sidebarCollapsed: boolean
+  toggleSidebar: () => void
 }
-const ShellContext = createContext<ShellApi>({ openDrawer: () => {}, newChat: () => {}, dark: false, toggleTheme: () => {} })
+const ShellContext = createContext<ShellApi>({ openDrawer: () => {}, newChat: () => {}, dark: false, toggleTheme: () => {}, sidebarCollapsed: false, toggleSidebar: () => {} })
 export const useShell = () => useContext(ShellContext)
 
 const NAV = [
@@ -62,12 +65,38 @@ export default function AppShell({ children }: AppShellProps) {
   const [chats, setChats] = useState<Chat[] | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [dark, setDark] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
   const [query, setQuery] = useState('')
   const touch = useRef<{ x: number; y: number } | null>(null)
 
   useEffect(() => {
     setDark(document.documentElement.classList.contains('dark'))
+    try {
+      setCollapsed(localStorage.getItem('bodha:sidebar') === 'closed')
+    } catch {}
   }, [])
+
+  const toggleSidebar = useCallback(() => {
+    setCollapsed(prev => {
+      const next = !prev
+      try {
+        localStorage.setItem('bodha:sidebar', next ? 'closed' : 'open')
+      } catch {}
+      return next
+    })
+  }, [])
+
+  // Ctrl/Cmd + B — the same shortcut other editors use for the sidebar.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b' && window.innerWidth >= 768) {
+        event.preventDefault()
+        toggleSidebar()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [toggleSidebar])
 
   const refresh = useCallback(async () => {
     try {
@@ -132,8 +161,8 @@ export default function AppShell({ children }: AppShellProps) {
   }, [router])
 
   const api = useMemo<ShellApi>(
-    () => ({ openDrawer: () => setDrawerOpen(true), newChat, dark, toggleTheme }),
-    [newChat, dark, toggleTheme],
+    () => ({ openDrawer: () => setDrawerOpen(true), newChat, dark, toggleTheme, sidebarCollapsed: collapsed, toggleSidebar }),
+    [newChat, dark, toggleTheme, collapsed, toggleSidebar],
   )
 
   // Swipe in from the left edge to open; swipe left anywhere to close.
@@ -173,6 +202,17 @@ export default function AppShell({ children }: AppShellProps) {
             <BodhaMark size={32} />
             <BodhaWordmark size="md" />
           </Link>
+          {!mobile && (
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="icon-btn ml-auto h-9 w-9"
+              title="Close sidebar (Ctrl+B)"
+              aria-label="Close sidebar"
+            >
+              <PanelLeftClose className="h-[18px] w-[18px]" strokeWidth={1.6} />
+            </button>
+          )}
         </motion.div>
 
         <nav className="px-3 pt-3 md:px-3">
@@ -319,7 +359,13 @@ export default function AppShell({ children }: AppShellProps) {
     <ShellContext.Provider value={api}>
       <div className="relative h-dvh overflow-hidden bg-surface md:flex" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         {/* Desktop sidebar */}
-        <aside className="hidden w-sidebar shrink-0 border-r border-border/70 md:block">{renderMenu(false)}</aside>
+        <aside
+          className={cn('hidden shrink-0 overflow-hidden transition-[width] duration-300 ease-out md:block', collapsed ? 'w-0 border-r-0' : 'w-sidebar border-r border-border/70')}
+          aria-hidden={collapsed}
+          {...(collapsed ? ({ inert: '' } as object) : {})}
+        >
+          <div className="h-full w-sidebar">{renderMenu(false)}</div>
+        </aside>
 
         {/* Phone drawer: lives behind the page and is revealed as the page slides aside. */}
         <div
@@ -355,6 +401,14 @@ export default function AppShell({ children }: AppShellProps) {
               <div className="flex-1" />
               <button type="button" onClick={toggleTheme} className="icon-btn h-11 w-11" aria-label={dark ? 'Switch to paper mode' : 'Switch to night mode'}>
                 {dark ? <Sun className="h-5 w-5" strokeWidth={1.6} /> : <Moon className="h-5 w-5" strokeWidth={1.6} />}
+              </button>
+            </header>
+          )}
+
+          {!onChat && collapsed && (
+            <header className="hidden h-14 shrink-0 items-center px-3 md:flex">
+              <button type="button" onClick={toggleSidebar} className="icon-btn h-10 w-10" title="Open sidebar (Ctrl+B)" aria-label="Open sidebar">
+                <PanelLeftOpen className="h-5 w-5" strokeWidth={1.6} />
               </button>
             </header>
           )}

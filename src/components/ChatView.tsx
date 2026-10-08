@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowDown, BookOpen, Check, Copy, FileText, GraduationCap, Lightbulb, Menu, Moon, RefreshCw, Sigma, Sun, SquarePen, Volume2, VolumeX, X } from 'lucide-react'
+import { ArrowDown, BookOpen, Check, Copy, FileText, GraduationCap, Lightbulb, Menu, Moon, PanelLeftOpen, RefreshCw, Sigma, Sun, SquarePen, Volume2, VolumeX, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { authFetch } from '@/lib/firebase/client-token'
 import { useSpeaker, useDictation } from '@/lib/voice'
@@ -492,6 +492,12 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
           <button type="button" onClick={shell.openDrawer} className="icon-btn h-11 w-11 md:hidden" aria-label="Open menu">
             <Menu className="h-[22px] w-[22px]" strokeWidth={1.6} />
           </button>
+
+          {shell.sidebarCollapsed && (
+            <button type="button" onClick={shell.toggleSidebar} className="icon-btn hidden h-11 w-11 md:inline-flex" title="Open sidebar (Ctrl+B)" aria-label="Open sidebar">
+              <PanelLeftOpen className="h-5 w-5" strokeWidth={1.6} />
+            </button>
+          )}
 
           <h1 className="min-w-0 flex-1 truncate px-1 text-center text-ui font-medium text-foreground/90 md:text-left">
             {messages.length > 0 || streaming ? title : ''}
