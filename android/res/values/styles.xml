@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Paper and ink from the first frame: the launch background is the app's own
+      paper colour with the बोध mark, so opening BODHA does not flash white on
+      its way to a warm page.
+    -->
+    <style name="BodhaTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash</item>
+        <item name="android:colorPrimary">#C1633B</item>
+        <item name="android:colorAccent">#C1633B</item>
+        <item name="android:statusBarColor">#FAF7F2</item>
+        <item name="android:navigationBarColor">#FAF7F2</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+</resources>

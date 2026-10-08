@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BODHA — not connected</title>
+<style>
+  :root {
+    --paper: #FAF7F2;
+    --ink: #2B2723;
+    --terracotta: #C1633B;
+    --muted: #6B6157;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, "Roboto", "Segoe UI", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  main {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 24px calc(32px + env(safe-area-inset-bottom));
+    text-align: center;
+  }
+  .mark { width: 104px; height: 104px; }
+  h1 {
+    margin: 26px 0 0;
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  p {
+    margin: 12px 0 0;
+    max-width: 34ch;
+    font-size: 16px;
+    line-height: 1.62;
+    color: var(--muted);
+  }
+  button {
+    margin-top: 30px;
+    appearance: none;
+    border: 0;
+    border-radius: 999px;
+    background: var(--terracotta);
+    color: #FDFBF8;
+    font-size: 16px;
+    font-weight: 500;
+    font-family: inherit;
+    padding: 14px 30px;
+    box-shadow: 0 6px 20px rgba(193, 99, 59, 0.22);
+  }
+  button:active { transform: translateY(1px); }
+  .hint {
+    margin-top: 40px;
+    font-size: 13px;
+    color: var(--muted);
+    opacity: 0.75;
+    max-width: 36ch;
+  }
+</style>
+</head>
+<body>
+<main>
+  <!-- The flame from BODHA's mark, drawn rather than loaded, so this page needs nothing. -->
+  <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
+    <rect width="64" height="64" rx="16" fill="#C1633B"/>
+    <path d="M32 9c-7.4 8.3-11.7 15.4-11.7 22a11.7 11.7 0 0 0 23.4 0c0-6.6-4.3-13.7-11.7-22z" fill="#FDFBF8"/>
+    <path d="M32 21.6c-3.4 3.9-5.4 7.1-5.4 10.2a5.4 5.4 0 0 0 10.8 0c0-3.1-2-6.3-5.4-10.2z" fill="#C1633B"/>
+    <path d="M13.6 44.4C17.3 52.6 24.2 57 32 57s14.7-4.4 18.4-12.6c-5.1 2.6-11.5 3.9-18.4 3.9s-13.3-1.3-18.4-3.9z" fill="#FDFBF8" opacity=".85"/>
+  </svg>
+
+  <h1>बोध</h1>
+  <p>BODHA is not reachable right now. Check your connection and try again — your chats and books are safe on the server.</p>
+
+  <button onclick="retry()">Try again</button>
+
+  <p class="hint">Answers come from BODHA's own models, so the app needs a connection to think. Reading an already-open page still works.</p>
+</main>
+
+<script>
+  function retry() {
+    if (window.BodhaNative && window.BodhaNative.retry) {
+      window.BodhaNative.retry();
+    } else {
+      location.href = 'https://bodha-ai-three.vercel.app';
+    }
+  }
+  // Coming back to the app after switching networks should just work.
+  window.addEventListener('online', retry);
+</script>
+</body>
+</html>

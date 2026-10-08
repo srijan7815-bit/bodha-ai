@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The same values the web app uses, so the shell and the page agree. -->
+    <color name="paper">#FAF7F2</color>
+    <color name="ink">#2B2723</color>
+    <color name="terracotta">#C1633B</color>
+</resources>
