@@ -183,7 +183,7 @@ export function speechStatus() {
 
 interface GroqVerbose {
   text?: string
-  segments?: Array<{ avg_logprob?: number; no_speech_prob?: number }>
+  segments?: Array<{ text?: string; avg_logprob?: number; no_speech_prob?: number }>
 }
 
 /** True when Whisper itself says this was silence or noise. */
@@ -231,7 +231,9 @@ export async function transcribe(
           form.append('model', model)
           form.append('response_format', 'verbose_json')
           form.append('temperature', '0')
-          form.append('prompt', STT_PROMPT)
+          // A vocabulary prompt makes Whisper echo its words into short clips,
+          // so it is off unless STT_PROMPT is set deliberately.
+          if (process.env.STT_PROMPT?.trim()) form.append('prompt', process.env.STT_PROMPT.trim().slice(0, 400))
           if (forced) form.append('language', forced)
           return fetch(GROQ_URL, {
             method: 'POST',
@@ -298,7 +300,14 @@ export async function transcribe(
         transcript?: string
         results?: Array<{ alternatives?: Array<{ transcript?: string }> }>
       }
-      const text = (data.text || data.transcript || data.results?.[0]?.alternatives?.[0]?.transcript || '').trim()
+      // Whisper pads clips with invented trailing words. Segments it is unsure
+      // are speech (high no-speech probability or very low confidence) are dropped.
+      const sure = data.segments?.filter(s => (s.no_speech_prob ?? 0) <= 0.6 && (s.avg_logprob ?? 0) > -1.2)
+      const text = (
+        data.segments?.length
+          ? (sure ?? []).map(s => (s.text ?? '').trim()).filter(Boolean).join(' ')
+          : data.text || data.transcript || data.results?.[0]?.alternatives?.[0]?.transcript || ''
+      ).trim()
       if (!text || PHANTOMS.test(text) || looksLikeSilence(data)) {
         // A clean "nothing there" answer is final — trying a weaker model on
         // silence only invites it to invent words.
