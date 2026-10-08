@@ -245,7 +245,9 @@ export default function LiveMode({
                 buffered = ''
                 return tail || null
               }
-              await new Promise(r => setTimeout(r, 30))
+              // A short poll: the speech pipeline must see a finished sentence
+              // within milliseconds of it landing, or that delay is heard.
+              await new Promise(r => setTimeout(r, 12))
             }
           },
           onStart: () => {
@@ -290,9 +292,10 @@ export default function LiveMode({
 
         await speakPromise
         if (turn !== turnRef.current || !activeRef.current) return
-        // A small gap so the tail of our own audio has drained from the room
-        // before the microphone is armed again.
-        scheduleListening(250)
+        // The last word has finished — hand the microphone straight back. The
+        // 120 ms gap only covers the decay of our own audio in the room; the
+        // next turn re-learns the noise floor anyway, so no echo slips in.
+        scheduleListening(120)
       } catch (err) {
         streamDone = true
         if (turn !== turnRef.current || !activeRef.current) return

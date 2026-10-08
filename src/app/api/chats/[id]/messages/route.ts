@@ -71,6 +71,25 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   const isRegenerate = parsed.data.regenerate === true
 
+  // ── Start every independent fetch NOW, before the writes below. ──────────
+  // These four reads used to happen one after another (settings → history →
+  // document → shelf), and in Live Mode each of them was heard as silence
+  // between the question and the first spoken word. None of them depends on
+  // this turn's message being saved, so they all run alongside it. The two
+  // that need the question wait for it — a regenerate only knows its question
+  // after the history is read, so those still start later, exactly as before.
+  const settingsP = store.getUserSettings(user.id).catch(() => null)
+  const docP = chat.documentId
+    ? store.getDocument(chat.documentId, user.id, { content: false }).catch(() => null)
+    : Promise.resolve(null)
+  let shelfP!: ReturnType<typeof retrieveForQuestion>
+  let webP!: ReturnType<typeof gatherWeb>
+  if (!isRegenerate) {
+    const question = parsed.data.content ?? ''
+    shelfP = retrieveForQuestion(question)
+    webP = gatherWeb(question, { live: parsed.data.live })
+  }
+
   // Save the student's message (or drop the old answer when regenerating)
   let userMessage: Message | null = null
   if (isRegenerate) {
@@ -97,7 +116,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   // Their own model, when they have connected one and the toggle is on it.
-  const settings = migrateSettings(await store.getUserSettings(user.id).catch(() => null))
+  const settings = migrateSettings(await settingsP)
   const wanted = parsed.data.model ?? settings?.preferredModel ?? BODHA_MODEL
   const preferred: ProviderConfig[] = []
   if (wanted !== BODHA_MODEL && settings?.custom) {
@@ -109,20 +128,22 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
   }
 
-  // Gather context: history + linked document
+  // Gather context: history + linked document. The message must be IN the
+  // history before it is read, so these two keep their order — everything
+  // else has been running alongside them since the line that started this
+  // section.
   const history = await store.listMessages(id, user.id)
-  let document = null
-  if (chat.documentId) {
-    document = await store.getDocument(chat.documentId, user.id, { content: false }).catch(() => null)
-  }
+  const document = await docP
 
   // Read the Indian Knowledge Systems shelf for this question. Retrieved once,
   // before the model is called, so the answer can be grounded *and* attributed:
   // the same passages go into the prompt and onto the saved message.
-  const question = isRegenerate
-    ? ([...history].reverse().find(m => m.role === 'user')?.content ?? '')
-    : (parsed.data.content ?? '')
-  const [shelf, web] = await Promise.all([retrieveForQuestion(question), gatherWeb(question, { live: parsed.data.live })])
+  if (isRegenerate) {
+    const question = [...history].reverse().find(m => m.role === 'user')?.content ?? ''
+    shelfP = retrieveForQuestion(question)
+    webP = gatherWeb(question, { live: parsed.data.live })
+  }
+  const [shelf, web] = await Promise.all([shelfP, webP])
 
   const encoder = new TextEncoder()
   const abortCtl = new AbortController()

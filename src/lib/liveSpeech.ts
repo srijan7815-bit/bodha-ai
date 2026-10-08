@@ -169,7 +169,11 @@ export function pickRecorderMime(): string {
 /* ─── Transcription ────────────────────────────────────────────────────────── */
 
 /** Send a finished recording to our own /api/stt and return the transcript. */
-export async function transcribeBlob(raw: Blob, language?: string): Promise<string> {
+export async function transcribeBlob(
+  raw: Blob,
+  language?: string,
+  opts: { live?: boolean } = {},
+): Promise<string> {
   // Normalise to 16 kHz mono WAV so the server never has to guess the container
   // and the ASR model gets exactly what it expects.
   const wav = await toWav(raw)
@@ -178,6 +182,9 @@ export async function transcribeBlob(raw: Blob, language?: string): Promise<stri
   const ext = wav ? 'wav' : blob.type.includes('mp4') ? 'm4a' : blob.type.includes('ogg') ? 'ogg' : 'webm'
   form.append('audio', blob, `audio.${ext}`)
   if (language) form.append('language', language)
+  // Live Mode passes this so the server uses a short leash: a hung recogniser
+  // must never hold a spoken conversation hostage the way it may hold dictation.
+  if (opts.live) form.append('live', '1')
 
   const res = await authFetch('/api/stt', { method: 'POST', body: form })
   if (!res.ok) {
@@ -193,7 +200,11 @@ export async function transcribeBlob(raw: Blob, language?: string): Promise<stri
 /* ─── One live turn ────────────────────────────────────────────────────────── */
 
 const VAD = {
-  silenceMs: 430, // stop this long after speech ends
+  // 360 ms: well under the pause a person leaves between sentences, so the turn
+  // ends as soon as the thought does, but comfortably above the gap inside a
+  // word. Every millisecond here is felt — it delays the transcript, the model
+  // and the first spoken word by exactly this much.
+  silenceMs: 360,
   minSpeechMs: 220, // ignore blips (coughs, clicks, doors)
   maxTurnMs: 30_000, // hard stop so a turn cannot run forever
   // Thresholds are RELATIVE to the measured noise floor, not absolute — a fixed
@@ -297,7 +308,7 @@ export async function startLiveTurn(opts: LiveTurnOptions = {}): Promise<LiveTur
           opts.onText?.('', { silent: true })
           return
         }
-        const text = await transcribeBlob(blob, opts.language)
+        const text = await transcribeBlob(blob, opts.language, { live: true })
         opts.onText?.(text, { silent: false })
       } catch (err) {
         opts.onError?.((err as Error).message || 'transcription failed')

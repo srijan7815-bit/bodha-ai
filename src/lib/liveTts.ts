@@ -156,12 +156,20 @@ function speakBrowser(text: string, { rate = 1, onend }: { rate?: number; onend?
  *
  * The clip is decoded once, before playback, into a small RMS curve that the
  * orb animates against — real lip-sync without ever touching the audio graph.
+ *
+ * `timeoutMs` bounds a single synthesis: in a live conversation a stalled
+ * request must turn into the browser voice after a few seconds, not into dead
+ * air that runs on until the server gives up.
  */
 async function fetchSpeech(
   text: string,
-  opts: { voice?: string; language?: string; provider?: SpeechProvider; signal?: AbortSignal } = {},
+  opts: { voice?: string; language?: string; provider?: SpeechProvider; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<{ url: string; blob: Blob } | null> {
   try {
+    // `timeoutMs` bounds one synthesis. When a caller signal is also given it
+    // wins — the live pipeline never passes one, so the timeout is what fires.
+    const signal =
+      opts.signal ?? (opts.timeoutMs ? AbortSignal.timeout(opts.timeoutMs) : undefined)
     const res = await authFetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -171,7 +179,7 @@ async function fetchSpeech(
         language: opts.language ?? 'en-US',
         provider: opts.provider ?? 'auto',
       }),
-      signal: opts.signal,
+      signal,
     })
     if (!res.ok) return null
     const blob = await res.blob()
@@ -239,7 +247,10 @@ export interface SpeakStreamOptions {
 
 /**
  * Low-latency streaming speech for Live Mode: speaks chunks in order while
- * pre-fetching the next chunk's audio during playback of the current one.
+ * TWO chunks ahead are always synthesising during playback of the current one.
+ * One-ahead is not enough in a real conversation — a single slow synthesis
+ * would open an audible gap mid-answer; with two in flight the queue absorbs
+ * one slow provider response and still plays the next sentence on time.
  */
 export function speakStream(opts: SpeakStreamOptions): { cancel: () => void } {
   stopSpeaking()
@@ -249,10 +260,11 @@ export function speakStream(opts: SpeakStreamOptions): { cancel: () => void } {
   const alive = () => !cancelled && myQueue === queueToken
 
   void (async () => {
+    // Every object URL created for this reply, so nothing leaks even when the
+    // queue is cancelled mid-flight with synthesised clips still unresolved.
+    const outstanding = new Set<string>()
     try {
-      // Prime the first sentence, then keep one synthesis in flight ahead of
-      // playback so the gap between spoken sentences is ~0.
-      const prime = async (): Promise<{ text: string | null; clip: Promise<SpeechClip | null> | null }> => {
+      const makeFrame = async (): Promise<{ text: string | null; clip: Promise<SpeechClip | null> | null }> => {
         const text = await opts.next()
         return {
           text,
@@ -261,29 +273,43 @@ export function speakStream(opts: SpeakStreamOptions): { cancel: () => void } {
                 voice: opts.voice,
                 language: opts.language,
                 provider: opts.provider,
+                timeoutMs: 8_000, // a stalled synthesis must not stall the room
               })
             : null,
         }
       }
 
-      let frame = await prime()
-      // Start the second sentence's synthesis immediately, before the first has
-      // even finished downloading, so playback never waits on the network.
-      let ahead: Promise<{ text: string | null; clip: Promise<SpeechClip | null> | null }> | null = frame.text ? prime() : null
+      // The pipeline: up to three frames requested at once — the one being
+      // spoken and two being prepared. `drained` stops us calling next() after
+      // it has said the reply is finished.
+      const pipes: Array<Promise<{ text: string | null; clip: Promise<SpeechClip | null> | null }>> = []
+      let drained = false
+      const fill = () => {
+        while (!drained && pipes.length < 3) pipes.push(makeFrame())
+      }
+      fill()
 
-      while (alive() && frame.text) {
+      while (alive() && pipes.length) {
+        const frame = await pipes.shift()!
+        if (!alive()) break
+        if (!frame.text) {
+          drained = true
+          break
+        }
+        if (!drained) fill()
+
+        const spoken: string = frame.text
         const clip: SpeechClip | null = frame.clip ? await frame.clip : null
         if (!alive()) {
           if (clip) URL.revokeObjectURL(clip.url)
           break
         }
 
-        const spoken: string = frame.text
-        const nextFrame = ahead ?? prime()
-
         if (clip && token === currentToken) {
+          outstanding.add(clip.url)
           opts.onStart?.()
           await playClip(clip.url, clip.blob)
+          outstanding.delete(clip.url)
         } else {
           if (clip) URL.revokeObjectURL(clip.url)
           // No server audio → the browser voice, so the room is never silent.
@@ -296,13 +322,18 @@ export function speakStream(opts: SpeakStreamOptions): { cancel: () => void } {
             speakBrowser(spoken, { onend: resolve })
           })
         }
-
-        frame = await nextFrame
-        ahead = frame.text ? prime() : null
       }
     } catch {
       /* never throw at the caller */
     }
+    for (const url of outstanding) {
+      try {
+        URL.revokeObjectURL(url)
+      } catch {
+        /* already gone */
+      }
+    }
+    outstanding.clear()
     if (alive()) opts.onend?.()
   })()
 

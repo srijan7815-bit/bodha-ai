@@ -41,7 +41,14 @@ export async function POST(req: NextRequest) {
   }
 
   const language = typeof form.get('language') === 'string' ? String(form.get('language')) : undefined
-  const result = await transcribe(Buffer.from(await audio.arrayBuffer()), audio.type || 'audio/webm', { language })
+  // Live Mode is a spoken conversation: a hung recogniser gets nine seconds,
+  // not twenty-five, before the next provider is tried — dead air there is
+  // heard as the tutor ignoring the student.
+  const live = form.get('live') === '1'
+  const result = await transcribe(Buffer.from(await audio.arrayBuffer()), audio.type || 'audio/webm', {
+    language,
+    timeoutMs: live ? 9_000 : undefined,
+  })
 
   if ('error' in result) {
     return NextResponse.json({ error: result.error, fallback: true }, { status: result.status })

@@ -80,7 +80,11 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
     webContext: ctx.webContext,
   })
 
-  const recent = ctx.history.slice(-HISTORY_LIMIT)
+  // Live Mode speaks two-to-five sentence replies; eight turns of conversation
+  // is more memory than a spoken exchange ever needs, and every extra turn of
+  // prefill is dead air before the first spoken word. Typed chat keeps the
+  // full limit.
+  const recent = ctx.history.slice(-(ctx.live ? 8 : HISTORY_LIMIT))
   for (const m of recent) {
     messages.push({ role: m.role, content: m.content })
   }
