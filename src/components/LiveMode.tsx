@@ -212,17 +212,32 @@ export default function LiveMode({
       let buffered = ''
       let streamDone = false
 
+      let emitted = 0
       const pushChunk = (chunk: string) => {
         buffered += chunk
         const parts = splitSentences(buffered)
-        while (parts.length > 1) queue.push(parts.shift() as string)
+        while (parts.length > 1) {
+          queue.push(parts.shift() as string)
+          emitted++
+        }
         const remainder = parts[0] || ''
         // A trailing sentence-final punctuation means the fragment is complete.
-        if (remainder && /[.!?…]["')\]]*\s*$/.test(buffered)) {
+        if (remainder && /[.!?…।॥]["')\]]*\s*$/.test(buffered)) {
           queue.push(remainder)
+          emitted++
           buffered = ''
         } else {
           buffered = remainder
+        }
+        // Get the first words out early: the opening clause is spoken as soon as
+        // it exists, while the rest of the sentence is still being written.
+        if (!emitted && !queue.length && buffered.length >= 46) {
+          const clause = buffered.match(/^(.{20,}?[,;:\u2014\u2013])\s+(?=\S)/)
+          if (clause) {
+            queue.push(clause[1])
+            emitted++
+            buffered = buffered.slice(clause[0].length)
+          }
         }
       }
 

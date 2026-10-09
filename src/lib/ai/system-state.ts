@@ -16,13 +16,21 @@ export function applySystemState(state: SystemState | null) {
  * hiccup must not stop a student's question.
  */
 export async function syncSystemState(maxAgeMs = 30_000): Promise<SystemState | null> {
+  const warm = cache
   if (cache && Date.now() - cache.at < maxAgeMs) return cache.state
+  // Already warm but a little old: answer now, refresh in the background.
+  if (cache) {
+    const stale = cache.state
+    cache = { at: Date.now(), state: stale }
+    void getStore().then(store => store.getSystemState()).then(applySystemState).catch(() => {})
+    return stale
+  }
   try {
     const state = await (await getStore()).getSystemState()
     applySystemState(state)
     return state
   } catch {
-    cache = { at: Date.now(), state: cache?.state ?? null }
+    cache = { at: Date.now(), state: warm?.state ?? null }
     return cache.state
   }
 }

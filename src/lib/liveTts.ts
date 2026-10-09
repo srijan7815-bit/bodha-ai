@@ -61,14 +61,14 @@ export function cleanForSpeech(text: string): string {
 export function splitSentences(text: string, { min = 40, max = 240 } = {}): string[] {
   const clean = cleanForSpeech(text)
   if (!clean) return []
-  const parts = (clean.match(/[^.!?…]+[.!?…]+["')\]]*\s*|[^.!?…]+$/g) || [clean])
+  const parts = (clean.match(/[^.!?…।॥]+[.!?…।॥]+["')\]]*\s*|[^.!?…।॥]+$/g) || [clean])
     .map(p => p.trim())
     .filter(Boolean)
 
   const out: string[] = []
   let buf = ''
   for (const piece of parts) {
-    const complete = /[.!?…]["')\]]*$/.test(piece)
+    const complete = /[.!?…।॥]["')\]]*$/.test(piece)
     // The FIRST complete sentence is always emitted on its own, however short —
     // it is what decides how fast the student hears an answer.
     if (!out.length && !buf && complete) {

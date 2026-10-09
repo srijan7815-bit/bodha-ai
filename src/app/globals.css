@@ -509,3 +509,9 @@ pre {
 }
 .animate-flame { animation: bodha-flame 4.2s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .animate-flame { animation: none; } }
+
+/* No browser or app "pull down to refresh" while scrolling through a chat. */
+html,
+body {
+  overscroll-behavior-y: none;
+}
