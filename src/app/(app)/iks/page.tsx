@@ -35,7 +35,7 @@ export default async function IksPage() {
         description={
           <>
             Before answering, BODHA searches {stats.works} primary Indian works — {stats.passages.toLocaleString('en-IN')}{' '}
-            passages, about {Math.round(stats.words / 1000).toLocaleString('en-IN')} thousand words — and quotes what it
+            passages, about {(stats.words / 1_000_000).toFixed(1)} million words — and quotes what it
             finds, with the work, the translator and the passage given for every citation. These are public-domain
             English translations, not summaries: what you read here is the translator&apos;s own text.
           </>

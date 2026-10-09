@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowUp, Check, Download, FileText, Loader2, Monitor, Square, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { authFetch } from '@/lib/firebase/client-token'
+import AppShell from '@/components/AppShell'
 
 interface Step {
   n: number
@@ -52,6 +53,14 @@ function save(file: OutFile) {
 }
 
 export default function ComputerPage() {
+  return (
+    <AppShell>
+      <ComputerWorkspace />
+    </AppShell>
+  )
+}
+
+function ComputerWorkspace() {
   const [task, setTask] = useState('')
   const [busy, setBusy] = useState(false)
   const [steps, setSteps] = useState<Step[]>([])
