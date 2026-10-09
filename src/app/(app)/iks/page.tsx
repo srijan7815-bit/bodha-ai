@@ -1,4 +1,5 @@
 import { BookMarked, ExternalLink, Quote } from 'lucide-react'
+import AppShell from '@/components/AppShell'
 import { IksSearch } from '@/components/IksSearch'
 import { PageHeader } from '@/components/Page'
 import { corpusStats, listWorks } from '@/lib/iks'
@@ -26,6 +27,7 @@ export default async function IksPage() {
   }
 
   return (
+    <AppShell>
     <div className="scrollbar-quiet h-full overflow-y-auto">
     <div className="mx-auto w-full max-w-read px-4 pb-24 pt-6 sm:px-6 sm:pt-8 md:px-8">
       <PageHeader
@@ -100,5 +102,6 @@ export default async function IksPage() {
       </p>
     </div>
     </div>
+    </AppShell>
   )
 }
