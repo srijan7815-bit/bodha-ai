@@ -18,7 +18,7 @@ in an Android shell that behaves like a real app:
 | **Back** | Walks BODHA's history; leaves the app only from the start page. |
 | **Links** | A source link, a Gutenberg text or an archive.org scan opens in the phone's browser; BODHA's own pages stay in the app. |
 | **Offline** | A plain बोध page with a retry button — not the browser's error screen. It also retries by itself when the phone rejoins a network. |
-| **Pull to refresh** | Drag down at the top of a page. |
+| **Pull to refresh** | Off on purpose (1.2): BODHA scrolls inside the page, so a downward swipe while reading a chat must never reload it. |
 | **Saving a file** | When BODHA's computer finishes a document, the phone gets it through `BodhaNative.saveFile` and writes it straight into **Downloads** (MediaStore on Android 10+, the public folder on older phones). A download from any link — a sandbox result, a hosted file — goes through Android's own DownloadManager, so progress shows in the notification shade and nothing is buffered in the app. |
 | **Paper and ink** | The status and navigation bars take the colour of the page under them, following BODHA's own Paper/Night theme rather than the phone's. The launch screen is the app's paper colour with the बोध mark, so there is no white flash. |
 | **Icons** | Real adaptive icons: the बोध wordmark in Noto Serif Devanagari, rendered by `make-icons.py` at every density Android asks for. |

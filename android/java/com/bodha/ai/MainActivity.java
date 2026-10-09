@@ -116,7 +116,8 @@ public class MainActivity extends Activity {
 
         setContentView(root);
         configureWebView(web);
-        enablePullToRefresh(web);
+        // Pull-to-refresh is intentionally off: BODHA scrolls inside the page, so a
+        // downward swipe anywhere (scrolling back up a chat) used to reload it.
 
         if (savedInstanceState != null) {
             web.restoreState(savedInstanceState);
