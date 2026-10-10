@@ -69,6 +69,15 @@ export default function LiveMode({
   const [reply, setReply] = useState('')
   const [error, setError] = useState('')
   const [muted, setMuted] = useState(false)
+  // Which language is being spoken to BODHA. Auto lets Whisper decide; Hindi
+  // and English pin it, which is the reliable choice in a noisy room.
+  const [sttLang, setSttLang] = useState<'auto' | 'hi' | 'en'>('auto')
+  const sttLangRef = useRef<'auto' | 'hi' | 'en'>('auto')
+  const cycleLang = () => {
+    const next = sttLangRef.current === 'auto' ? 'hi' : sttLangRef.current === 'hi' ? 'en' : 'auto'
+    sttLangRef.current = next
+    setSttLang(next)
+  }
 
   // The conversation shown in the pull-down transcript.
   const [turns, setTurns] = useState<LiveTurn[]>([])
@@ -350,7 +359,7 @@ export default function LiveMode({
     if (serverSttRef.current && micSupported()) {
       startingRef.current = true
       void startLiveTurn({
-        // No language hint: Whisper detects Hindi, English or a mix from the audio.
+        language: sttLangRef.current === 'auto' ? undefined : sttLangRef.current,
         // Ignore the microphone entirely while BODHA is talking, so our own
         // voice coming back through the speakers cannot retrigger the detector.
         isMuted: () => speakingRef.current || mutedRef.current,
@@ -505,21 +514,27 @@ export default function LiveMode({
     const next = !mutedRef.current
     mutedRef.current = next
     setMuted(next)
+    // The mic and the reply are independent. While BODHA is thinking or
+    // speaking, muting must not touch the turn — bumping it is what aborts the
+    // answer in flight. The mic simply stays closed when the reply is done.
+    const replying = phaseRef.current === 'speaking' || phaseRef.current === 'thinking'
     if (next) {
-      turnRef.current++
-      startingRef.current = false
-      if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
-      const rec = recRef.current
-      if (rec) {
-        try {
-          rec.cancel()
-        } catch {
-          /* already finished */
+      if (!replying) {
+        turnRef.current++
+        startingRef.current = false
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+        const rec = recRef.current
+        if (rec) {
+          try {
+            rec.cancel()
+          } catch {
+            /* already finished */
+          }
         }
+        recRef.current = null
+        setPhase('muted')
       }
-      recRef.current = null
-      if (phaseRef.current !== 'speaking') setPhase('muted')
-    } else if (phaseRef.current !== 'speaking') {
+    } else if (!replying) {
       scheduleListening(120)
     }
   }
@@ -667,9 +682,19 @@ export default function LiveMode({
             </div>
           ) : (
             <>
+              <button
+                type="button"
+                onClick={cycleLang}
+                className="absolute left-4 top-[max(1rem,env(safe-area-inset-top))] z-20 rounded-full border border-white/15 bg-white/[0.06] px-3.5 py-1.5 text-[13px] text-white/85 hover:bg-white/10"
+                aria-label={`Listening language: ${sttLang === 'auto' ? 'automatic' : sttLang === 'hi' ? 'Hindi' : 'English'}. Tap to change.`}
+                title="What language are you speaking?"
+              >
+                {sttLang === 'auto' ? 'Auto' : sttLang === 'hi' ? 'हिंदी' : 'English'}
+              </button>
+
               {/* Transcript sheet — revealed as the orb is dragged down */}
               <motion.div
-                className="pointer-events-none absolute inset-x-0 top-0 z-0 flex flex-col"
+                className={`absolute inset-x-0 top-0 z-0 flex flex-col ${expanded ? 'pointer-events-auto' : 'pointer-events-none'}`}
                 style={{ opacity: sheetOpacity, height: 'calc(50% + 40px)', paddingTop: '3.5rem' }}
                 aria-hidden={!expanded}
               >

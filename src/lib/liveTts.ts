@@ -264,19 +264,35 @@ export function speakStream(opts: SpeakStreamOptions): { cancel: () => void } {
     // queue is cancelled mid-flight with synthesised clips still unresolved.
     const outstanding = new Set<string>()
     try {
-      const makeFrame = async (): Promise<{ text: string | null; clip: Promise<SpeechClip | null> | null }> => {
-        const text = await opts.next()
-        return {
-          text,
-          clip: text
-            ? fetchSpeech(text, {
-                voice: opts.voice,
-                language: opts.language,
-                provider: opts.provider,
-                timeoutMs: 8_000, // a stalled synthesis must not stall the room
-              })
-            : null,
+      // Several frames are requested at once, and next() polls — left alone,
+      // two callers race for one sentence and the reply plays out of order.
+      // Chaining the calls makes the Nth caller always get the Nth sentence.
+      let nextChain: Promise<unknown> = Promise.resolve()
+      const nextInOrder = (): Promise<string | null> => {
+        const p = nextChain.then(() => opts.next())
+        nextChain = p.catch(() => null)
+        return p
+      }
+
+      // A clip that fails is retried before anything else happens: falling
+      // back to the device voice mid-answer is what made BODHA's voice change.
+      const fetchReliable = async (text: string): Promise<SpeechClip | null> => {
+        for (let attempt = 0; attempt < 3 && alive(); attempt++) {
+          const clip = await fetchSpeech(text, {
+            voice: opts.voice,
+            language: opts.language,
+            provider: opts.provider,
+            timeoutMs: attempt === 0 ? 12_000 : 15_000,
+          })
+          if (clip) return clip
+          await new Promise(r => setTimeout(r, 250 * (attempt + 1)))
         }
+        return null
+      }
+
+      const makeFrame = async (): Promise<{ text: string | null; clip: Promise<SpeechClip | null> | null }> => {
+        const text = await nextInOrder()
+        return { text, clip: text ? fetchReliable(text) : null }
       }
 
       // The pipeline: up to three frames requested at once — the one being

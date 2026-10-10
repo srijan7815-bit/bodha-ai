@@ -1,4 +1,4 @@
-import { getStore } from '@/lib/store'
+import { getStore, storeMode } from '@/lib/store'
 import { completeOnce, configFor, configuredModels, noteProviderResult } from './provider'
 import { applySystemState } from './system-state'
 import { fishLastError, synthesize } from '@/lib/speech'
@@ -115,7 +115,13 @@ export async function runWatchdog(opts: { deep?: boolean } = {}): Promise<System
   ])
 
   // Storage is proven by the very read above; a write proves the other half.
-  let storage: ServiceProbe = { ok: true, detail: 'Reading and writing normally' }
+  const mode = storeMode()
+  let storage: ServiceProbe =
+    mode === 'firebase'
+      ? { ok: true, detail: 'Firestore is reading and writing normally' }
+      : process.env.VERCEL
+        ? { ok: false, detail: 'Temporary file store in use — Firebase variables are missing, so chats will be forgotten' }
+        : { ok: true, detail: 'Local file store (development)' }
 
   const strikes: Record<string, number> = { ...(previous?.strikes ?? {}) }
   let disabled = (previous?.disabledModels ?? []).filter(m => configured.includes(m))

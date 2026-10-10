@@ -8,7 +8,9 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "postinstall": "node scripts/copy-pdf-worker.mjs"
+    "postinstall": "node scripts/copy-pdf-worker.mjs",
+    "check:env": "node scripts/check-env.mjs",
+    "prebuild": "node scripts/check-env.mjs --warn"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

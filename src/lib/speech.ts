@@ -199,11 +199,25 @@ const STT_PROMPT =
   'यह हिंदी और English मिलकर बोले गए सवाल हैं: भगवद्गीता, उपनिषद, वेद, योग, आयुर्वेद, धर्म, कर्म, मोक्ष।'
 
 /** Languages worth forcing when the caller names one. English is left to auto-detect on purpose. */
-const FORCEABLE = new Set(['hi', 'bn', 'ta', 'te', 'mr', 'gu', 'kn', 'ml', 'pa', 'ur', 'sa', 'ne'])
+const FORCEABLE = new Set(['hi', 'en', 'bn', 'ta', 'te', 'mr', 'gu', 'kn', 'ml', 'pa', 'ur', 'sa', 'ne'])
 
 /** Things Whisper invents out of silence and room noise. */
 const PHANTOMS =
   /^(thank you( so much)?( for watching)?|thanks for watching|please subscribe|you|bye|\.|…|धन्यवाद|शुक्रिया)[.!\s]*$/i
+
+/**
+ * BODHA's name is often heard as Buddha, Bodh, Boda… When the word is plainly
+ * a way of calling the assistant — right after a greeting, or as the first word
+ * followed by a comma/question — it becomes BODHA. A sentence that merely starts
+ * with "Buddha was born…" is left alone.
+ */
+const NAME = '(?:bodha|bodh|boda|bodhaa|bhoda|bohda|bowda|boddha|budha|buddha|buda|bodhi|bauddha|बुद्धा|बुद्ध|बोधा|बोध|बोदा|बोधि|भोदा)'
+const GREET = '(?:hey|hi|hii|hello|hallo|ok|okay|namaste|namaskar|arre|are|अरे|हे|हेलो|हैलो|ओके|नमस्ते|नमस्कार)'
+const AFTER_GREETING = new RegExp(`^(${GREET}[,!.\\s]+)${NAME}(?![\\p{L}\\p{M}])`, 'iu')
+const VOCATIVE = new RegExp(`^${NAME}(?=\\s*[,!?.]|\\s*$)`, 'iu')
+export function normaliseAddress(text: string): string {
+  return text.replace(AFTER_GREETING, (_m, greet: string) => `${greet}BODHA`).replace(VOCATIVE, 'BODHA')
+}
 
 export function speechStatus() {
   return {
@@ -222,6 +236,7 @@ export function speechStatus() {
 
 interface GroqVerbose {
   text?: string
+  language?: string
   segments?: Array<{ text?: string; avg_logprob?: number; no_speech_prob?: number }>
 }
 
@@ -257,32 +272,28 @@ export async function transcribe(
   // nonsense, so English (and anything unknown) is detected from the audio.
   const forced = FORCEABLE.has(hint) ? hint : undefined
 
-  const attempts: Array<{ label: string; run: () => Promise<Response> }> = []
+  const attempts: Array<{ label: string; model?: string; run: () => Promise<Response> }> = []
 
   const gKey = groqKey()
+  const groqRun = (model: string, lang?: string) => {
+    const form = new FormData()
+    form.append('file', new Blob([new Uint8Array(audio)], { type: mime }), `audio.${extension}`)
+    form.append('model', model)
+    form.append('response_format', 'verbose_json')
+    form.append('temperature', '0')
+    // A vocabulary prompt makes Whisper echo its words into short clips,
+    // so it is off unless STT_PROMPT is set deliberately.
+    if (process.env.STT_PROMPT?.trim()) form.append('prompt', process.env.STT_PROMPT.trim().slice(0, 400))
+    if (lang) form.append('language', lang)
+    return fetch(GROQ_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${gKey}` },
+      body: form,
+      signal: AbortSignal.timeout(timeout),
+    })
+  }
   if (gKey) {
-    for (const model of GROQ_MODELS) {
-      attempts.push({
-        label: `groq ${model}`,
-        run: () => {
-          const form = new FormData()
-          form.append('file', new Blob([new Uint8Array(audio)], { type: mime }), `audio.${extension}`)
-          form.append('model', model)
-          form.append('response_format', 'verbose_json')
-          form.append('temperature', '0')
-          // A vocabulary prompt makes Whisper echo its words into short clips,
-          // so it is off unless STT_PROMPT is set deliberately.
-          if (process.env.STT_PROMPT?.trim()) form.append('prompt', process.env.STT_PROMPT.trim().slice(0, 400))
-          if (forced) form.append('language', forced)
-          return fetch(GROQ_URL, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${gKey}` },
-            body: form,
-            signal: AbortSignal.timeout(timeout),
-          })
-        },
-      })
-    }
+    for (const model of GROQ_MODELS) attempts.push({ label: `groq ${model}`, model, run: () => groqRun(model, forced) })
   }
 
   const fishKey = process.env.FISH_AUDIO_API_KEY?.trim()
@@ -335,10 +346,17 @@ export async function transcribe(
         console.warn(`[speech] ${attempt.label} STT → HTTP ${res.status}`)
         continue
       }
-      const data = (await res.json().catch(() => ({}))) as GroqVerbose & {
+      let data = (await res.json().catch(() => ({}))) as GroqVerbose & {
         transcript?: string
         results?: Array<{ alternatives?: Array<{ transcript?: string }> }>
       }
+      // Hindi spoken in a Hindi-English mix is sometimes labelled Urdu and written
+      // in Arabic script. When that happens (and no language was pinned), ask again as Hindi.
+      if (attempt.model && !forced && /^(urdu|persian|arabic|pashto|sindhi)$/i.test(String(data.language ?? ''))) {
+        const again = await groqRun(attempt.model, 'hi').catch(() => null)
+        if (again?.ok) data = (await again.json().catch(() => data)) as typeof data
+      }
+
       // Whisper pads clips with invented trailing words. Segments it is unsure
       // are speech (high no-speech probability or very low confidence) are dropped.
       const sure = data.segments?.filter(s => (s.no_speech_prob ?? 0) <= 0.6 && (s.avg_logprob ?? 0) > -1.2)
@@ -353,7 +371,7 @@ export async function transcribe(
         heardSilence = true
         break
       }
-      return { text, provider: attempt.label }
+      return { text: normaliseAddress(text), provider: attempt.label }
     } catch (err) {
       console.warn(`[speech] ${attempt.label} STT failed:`, (err as Error).message)
       lastStatus = 504
