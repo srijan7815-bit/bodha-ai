@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
 import * as XLSX from 'xlsx'
+import { Sandbox } from '@e2b/code-interpreter'
 import { githubTargets, htmlToText, readGithub, readPage, safeFetch, webSearch } from '../web'
 
 const MAX_FILE = 5 * 1024 * 1024
@@ -32,6 +33,7 @@ export const MIME: Record<string, string> = {
 export class Workspace {
   readonly dir: string
   private total = 0
+  private box: Sandbox | null = null
 
   private constructor(dir: string) {
     this.dir = dir
@@ -43,7 +45,53 @@ export class Workspace {
     return new Workspace(dir)
   }
 
+  /** Whether an isolated computer (E2B) is available for running code. */
+  static get hasComputer(): boolean {
+    return Boolean(process.env.E2B_API_KEY?.trim())
+  }
+
+  private static readonly REMOTE = '/home/user/work'
+
+  private async computer(): Promise<Sandbox> {
+    if (!Workspace.hasComputer) throw new Error('no computer is connected (E2B_API_KEY is not set)')
+    if (!this.box) this.box = await Sandbox.create({ apiKey: process.env.E2B_API_KEY!.trim(), timeoutMs: 180_000 })
+    return this.box
+  }
+
+  /** Copy the workspace into the computer, run something, copy new/changed files back. */
+  private async onComputer(run: (box: Sandbox) => Promise<string>): Promise<string> {
+    const box = await this.computer()
+    const local = await this.list()
+    for (const f of local) {
+      const bytes = await fs.readFile(path.join(this.dir, f.name))
+      await box.files.write(`${Workspace.REMOTE}/${f.name}`, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer)
+    }
+    const known = new Map(local.map(f => [f.name, f.size]))
+    const output = await run(box)
+
+    const changed: string[] = []
+    const walk = async (remote: string, rel: string, depth: number) => {
+      for (const entry of await box.files.list(remote)) {
+        const next = rel ? `${rel}/${entry.name}` : entry.name
+        if (String(entry.type) === 'dir') {
+          if (depth < 3 && !/^(\.|__pycache__|node_modules)/.test(entry.name)) await walk(`${remote}/${entry.name}`, next, depth + 1)
+        } else if (entry.size <= MAX_FILE && known.get(next) !== entry.size && changed.length < 10) {
+          try {
+            const bytes = await box.files.read(`${remote}/${entry.name}`, { format: 'bytes' })
+            await this.save(next, Buffer.from(bytes))
+            changed.push(next)
+          } catch {
+            /* a file that cannot be copied back is skipped */
+          }
+        }
+      }
+    }
+    await walk(Workspace.REMOTE, '', 0).catch(() => {})
+    return `${output}${changed.length ? `\n[files saved to the workspace: ${changed.join(', ')}]` : ''}`.slice(0, 4000)
+  }
+
   async destroy() {
+    await this.box?.kill().catch(() => {})
     await fs.rm(this.dir, { recursive: true, force: true }).catch(() => {})
   }
 
@@ -133,6 +181,29 @@ export class Workspace {
         const text = target ? await readGithub(target) : null
         if (!text) throw new Error('could not read that GitHub address')
         return text.slice(0, 5000)
+      }
+      case 'run_python': {
+        const code = String(a.code ?? '').slice(0, 20_000)
+        if (!code.trim()) throw new Error('"code" is empty')
+        return this.onComputer(async box => {
+          const exec = await box.runCode(`import os\nos.makedirs('${Workspace.REMOTE}', exist_ok=True)\nos.chdir('${Workspace.REMOTE}')\n${code}`, { timeoutMs: 60_000 })
+          const out = [exec.logs.stdout.join(''), exec.logs.stderr.join(''), exec.text ? `=> ${exec.text}` : ''].filter(Boolean).join('\n')
+          if (exec.error) throw new Error(`${exec.error.name}: ${exec.error.value}\n${out}`.slice(0, 1500))
+          return out || '(finished, no output)'
+        })
+      }
+      case 'run_shell': {
+        const command = String(a.command ?? '').slice(0, 2_000)
+        if (!command.trim()) throw new Error('"command" is empty')
+        return this.onComputer(async box => {
+          try {
+            const r = await box.commands.run(command, { cwd: Workspace.REMOTE, timeoutMs: 60_000 })
+            return [r.stdout, r.stderr].filter(Boolean).join('\n') || '(finished, no output)'
+          } catch (err) {
+            const e = err as { stdout?: string; stderr?: string; exitCode?: number; message?: string }
+            throw new Error(`exit ${e.exitCode ?? '?'}: ${[e.stdout, e.stderr, e.message].filter(Boolean).join('\n')}`.slice(0, 1500))
+          }
+        })
       }
       case 'make_pdf':
         return `created ${await this.save(String(a.path), await makePdf(String(a.title ?? ''), asBlocks(a.blocks)))}`

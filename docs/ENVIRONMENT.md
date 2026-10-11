@@ -11,9 +11,11 @@ The full list (with what each one does) is in [`env.manifest.json`](../env.manif
 | `FIREBASE_ADMIN_PROJECT_ID`, `FIREBASE_ADMIN_CLIENT_EMAIL`, `FIREBASE_ADMIN_PRIVATE_KEY` | Accounts, chats, uploaded books (Firestore) |
 | `FISH_AUDIO_API_KEY` | Read-aloud and Live Mode voice |
 | `GROQ_API_KEY` | Dictation and Live Mode listening |
+| `TAVILY_API_KEY` *(recommended)* | Web search (falls back to a keyless search without it) |
+| `E2B_API_KEY` *(recommended)* | BODHA's Computer can run Python and shell commands |
 
 Everything else has a default in the code. Recommended extras: `GITHUB_TOKEN` (read-only, public repos) and `GITHUB_DEFAULT_OWNER`.
-The old `.env` also held `NEXT_PUBLIC_FIREBASE_API_KEY / AUTH_DOMAIN / MESSAGING_SENDER_ID / APP_ID`, `E2B_API_KEY` and `TAVILY_API_KEY` — the code does not read these, so they need not be copied.
+The old `.env` also held `NEXT_PUBLIC_FIREBASE_API_KEY / AUTH_DOMAIN / MESSAGING_SENDER_ID / APP_ID` — the code does not read these, so they need not be copied.
 
 ## Moving to Vercel safely (do these in order)
 

@@ -202,6 +202,28 @@ export async function readGithub(t: GhTarget): Promise<string | null> {
 /* ──────────────────────────────────── web search ──────────────────────────────────── */
 
 export async function webSearch(query: string): Promise<Array<{ title: string; url: string; snippet: string }>> {
+  // Tavily is built for AI search and returns clean excerpts; used when its key is set.
+  const tavily = process.env.TAVILY_API_KEY?.trim()
+  if (tavily) {
+    try {
+      const res = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tavily}` },
+        body: JSON.stringify({ query: query.slice(0, 300), max_results: 5, search_depth: 'basic' }),
+        signal: AbortSignal.timeout(8_000),
+      })
+      if (res.ok) {
+        const json = (await res.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> }
+        const found = (json.results ?? [])
+          .filter(r => typeof r.url === 'string' && /^https?:\/\//.test(r.url))
+          .slice(0, 5)
+          .map(r => ({ title: String(r.title ?? r.url).slice(0, 140), url: String(r.url), snippet: String(r.content ?? '').replace(/\s+/g, ' ').slice(0, 300) }))
+        if (found.length) return found
+      }
+    } catch {
+      /* fall through to the keyless search below */
+    }
+  }
   try {
     const res = await fetch('https://html.duckduckgo.com/html/', {
       method: 'POST',
