@@ -75,6 +75,13 @@ export default function WorkspaceDrawer({ open, onClose, onChange }: WorkspaceDr
       if (!res.ok) throw new Error(data.error ?? 'Could not read the workspace')
       apply(data.files ?? [], data.totalBytes)
       setLimits(data.limits ?? null)
+      // The storage layer can answer and still be unable to store (a Firestore API left
+      // disabled, for instance). Say so plainly rather than showing an empty drawer.
+      setError(
+        data.degraded
+          ? `Your workspace storage refused the last call: ${data.degraded}`
+          : null,
+      )
     } catch (err) {
       setError((err as Error).message)
     } finally {

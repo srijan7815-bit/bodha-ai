@@ -36,6 +36,20 @@ export const WS_MAX_FILE = 5 * 1024 * 1024
 export const WS_MAX_FILES = 24
 export const WS_MAX_TOTAL = 12 * 1024 * 1024
 
+/**
+ * The last storage failure, so the UI can say "the workspace could not be reached"
+ * instead of showing an empty drawer that looks like the files were lost.
+ */
+let lastError: string | null = null
+
+export function workspaceError(): string | null {
+  return lastError
+}
+
+function note(err: unknown): void {
+  lastError = (err as Error).message?.slice(0, 200) ?? 'unknown storage error'
+}
+
 const CHUNK_BYTES = 700 * 1024
 const FS_ROOT = () => path.join(process.cwd(), 'data', 'bodha', 'workspace')
 
@@ -123,6 +137,7 @@ export async function listWorkspaceFiles(ownerId: string): Promise<WorkspaceFile
       .filter(f => f.name)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   } catch (err) {
+    note(err)
     console.warn('[workspace] listing failed:', (err as Error).message)
     return []
   }
@@ -158,6 +173,7 @@ export async function readWorkspaceFile(ownerId: string, name: string): Promise<
       bytes,
     }
   } catch (err) {
+    note(err)
     console.warn('[workspace] read failed:', (err as Error).message)
     return null
   }
@@ -223,6 +239,7 @@ export async function deleteWorkspaceFile(ownerId: string, rawName: string): Pro
     await ref.delete()
     return true
   } catch (err) {
+    note(err)
     console.warn('[workspace] delete failed:', (err as Error).message)
     return false
   }

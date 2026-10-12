@@ -8,6 +8,7 @@ import {
   listWorkspaceFiles,
   readWorkspaceFile,
   renameWorkspaceFile,
+  workspaceError,
   workspaceMode,
   writeWorkspaceFile,
   WS_MAX_FILE,
@@ -55,6 +56,9 @@ export async function GET(req: NextRequest) {
       totalBytes: files.reduce((sum, f) => sum + f.size, 0),
       limits: { fileBytes: WS_MAX_FILE, totalBytes: WS_MAX_TOTAL, files: WS_MAX_FILES },
       mode: workspaceMode(),
+      // Non-null when the storage layer refused the last call — the drawer shows it,
+      // so an unreachable workspace never looks like an empty one.
+      degraded: workspaceError(),
     })
   }
 
