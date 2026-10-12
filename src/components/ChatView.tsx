@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowDown, BookOpen, Check, Copy, FileText, GraduationCap, Lightbulb, Menu, Moon, PanelLeftOpen, RefreshCw, Sigma, Sun, SquarePen, Volume2, VolumeX, X } from 'lucide-react'
+import { ArrowDown, BookOpen, Check, Copy, Download, FileText, FolderOpen, GraduationCap, Lightbulb, Menu, Moon, PanelLeftOpen, RefreshCw, Sigma, Sun, SquarePen, Volume2, VolumeX, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { authFetch } from '@/lib/firebase/client-token'
 import { useSpeaker, useDictation } from '@/lib/voice'
@@ -12,6 +12,7 @@ import Markdown, { type RunnableLang } from '@/components/Markdown'
 import Composer from '@/components/Composer'
 import LiveMode from '@/components/LiveMode'
 import SandboxDrawer from '@/components/SandboxDrawer'
+import WorkspaceDrawer, { type WorkspaceFileMeta } from '@/components/WorkspaceDrawer'
 import { BodhaMark } from '@/components/Brand'
 import { useAuth } from '@/components/AuthProvider'
 import { activeModel, toggleOptions, useSettings } from '@/lib/settings-client'
@@ -64,6 +65,18 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   const [atBottom, setAtBottom] = useState(true)
 
   const [runCode, setRunCode] = useState<{ lang: RunnableLang; code: string } | null>(null)
+
+  /**
+   * The computer toggle. A student's preference rather than a per-chat setting —
+   * "I want the computer available while I work" — so it is remembered locally and
+   * sent with every message. When it is on, only task-shaped messages are handed to
+   * the computer; questions still go straight to the tutor.
+   */
+  const [computer, setComputer] = useState(false)
+  const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  /** Files the computer saved during the turn that just finished. */
+  const [chatFiles, setChatFiles] = useState<WorkspaceFileMeta[]>([])
+  const [workspaceCount, setWorkspaceCount] = useState(0)
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -172,13 +185,47 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
   // Stop speaking when leaving the page.
   useEffect(() => () => speaker.stop(), [speaker])
 
+  // ─── The computer toggle + the workspace file count ───────────────────────
+  useEffect(() => {
+    try {
+      setComputer(localStorage.getItem('bodha:computer') === 'on')
+    } catch {
+      /* private mode — the toggle simply starts off */
+    }
+  }, [])
+
+  const setComputerOn = useCallback((on: boolean) => {
+    setComputer(on)
+    try {
+      localStorage.setItem('bodha:computer', on ? 'on' : 'off')
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  const refreshWorkspace = useCallback(async () => {
+    try {
+      const res = await authFetch('/api/workspace')
+      if (!res.ok) return
+      const data = await res.json()
+      setWorkspaceCount((data.files ?? []).length)
+    } catch {
+      /* the workspace is a convenience here; the drawer reports its own errors */
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshWorkspace()
+  }, [refreshWorkspace])
+
   // ─── Streaming ────────────────────────────────────────────────────────────
   const runStream = useCallback(
-    async (targetChatId: string, body: { content?: string; regenerate?: boolean; model?: string }, optimistic?: Message) => {
+    async (targetChatId: string, body: { content?: string; regenerate?: boolean; model?: string; computer?: boolean }, optimistic?: Message) => {
       setBusy(true)
       setError(null)
       setNotice(null)
       setStreaming('')
+      setChatFiles([])
 
       const controller = new AbortController()
       abortRef.current = controller
@@ -209,7 +256,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         const res = await authFetch(`/api/chats/${targetChatId}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...body, model }),
+          body: JSON.stringify({ ...body, model, computer }),
           signal: controller.signal,
         })
 
@@ -264,6 +311,10 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
               scheduleStream()
             } else if (frame.t === 'notice' && frame.v) {
               setNotice(frame.v)
+            } else if (frame.t === 'files' && frame.items) {
+              // The computer finished and saved these into the workspace.
+              setChatFiles(frame.items as unknown as WorkspaceFileMeta[])
+              void refreshWorkspace()
             } else if (frame.t === 'done') {
               cancelStream()
               if (frame.message) {
@@ -290,7 +341,7 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
         announceChatsChanged()
       }
     },
-    [model],
+    [model, computer, refreshWorkspace],
   )
 
   const send = useCallback(async () => {
@@ -514,6 +565,21 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
             </Link>
           )}
 
+          <button
+            type="button"
+            onClick={() => setWorkspaceOpen(true)}
+            className="relative icon-btn h-11 w-11"
+            aria-label="Your workspace"
+            title={workspaceCount ? `Your workspace — ${workspaceCount} file${workspaceCount === 1 ? '' : 's'}` : 'Your workspace'}
+          >
+            <FolderOpen className="h-5 w-5" strokeWidth={1.6} />
+            {workspaceCount > 0 && (
+              <span className="absolute right-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium leading-none text-primary-foreground">
+                {workspaceCount}
+              </span>
+            )}
+          </button>
+
           {messages.length > 0 && (
             <button type="button" onClick={shell.newChat} className="icon-btn h-11 w-11" aria-label="New chat" title="New chat">
               <SquarePen className="h-5 w-5" strokeWidth={1.6} />
@@ -578,6 +644,39 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
                   <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-[2px] animate-blink-caret rounded-sm bg-primary align-middle" />
                   {liveSources.length > 0 && <Sources sources={liveSources} />}
                 </div>
+              )}
+
+              {/* What the computer just made, and the way into the workspace */}
+              {chatFiles.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+                  className="rounded-2xl border border-border/70 bg-surface px-3.5 py-3"
+                >
+                  <p className="flex items-center gap-2 text-ui-sm text-muted-foreground">
+                    <FolderOpen className="h-3.5 w-3.5 text-primary" strokeWidth={1.8} />
+                    Saved to your workspace — open, edit or delete any time
+                  </p>
+                  <ul className="mt-2 space-y-1">
+                    {chatFiles.map(file => (
+                      <li key={file.name} className="flex items-center gap-2">
+                        <FileText className="h-3.5 w-3.5 shrink-0 text-primary" strokeWidth={1.7} />
+                        <span className="min-w-0 flex-1 truncate text-ui">{file.name}</span>
+                        <span className="shrink-0 text-ui-sm text-muted-foreground">
+                          {file.size < 1024 ? `${file.size} B` : `${Math.round(file.size / 1024)} KB`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    onClick={() => setWorkspaceOpen(true)}
+                    className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-foreground px-3.5 py-1.5 text-ui-sm text-background"
+                  >
+                    <Download className="h-3.5 w-3.5" strokeWidth={1.9} /> Open workspace
+                  </button>
+                </motion.div>
               )}
 
               {busy && !streaming && (
@@ -648,6 +747,10 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
               modelOptions={connected && settings.custom ? modelOptions : [{ id: 'bodha', label: 'BODHA' }]}
               modelValue={model}
               onModelChange={choice => void savePreferences({ preferredModel: choice })}
+              computer={computer}
+              onComputerChange={setComputerOn}
+              onOpenWorkspace={() => setWorkspaceOpen(true)}
+              workspaceCount={workspaceCount}
             />
           </div>
         </div>
@@ -661,6 +764,16 @@ export default function ChatView({ chat, initialMessages, documentMeta, initialD
           setRunCode(null)
           router.push('/sandbox')
         }}
+      />
+
+      {/* ── Your workspace: every file BODHA's computer has made ─────────── */}
+      <WorkspaceDrawer
+        open={workspaceOpen}
+        onClose={() => {
+          setWorkspaceOpen(false)
+          void refreshWorkspace()
+        }}
+        onChange={files => setWorkspaceCount(files.length)}
       />
 
       {/* ── Live Mode — a voice room of its own, not read-aloud ─────────── */}

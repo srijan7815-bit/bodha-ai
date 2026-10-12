@@ -28,7 +28,9 @@ export async function POST(req: NextRequest) {
     async start(controller) {
       const send = (frame: unknown) => controller.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`))
       try {
-        for await (const frame of runAgent(parsed.data.task, req.signal)) send(frame)
+        // The signed-in student owns the workspace, so the Computer page and the
+        // chat's computer toggle work on the same files.
+        for await (const frame of runAgent(parsed.data.task, req.signal, { ownerId: user.id })) send(frame)
       } catch (err) {
         send({ t: 'error', message: (err as Error).message.slice(0, 160) })
       } finally {

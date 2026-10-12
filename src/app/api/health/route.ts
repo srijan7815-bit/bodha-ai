@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import manifest from '../../../../env.manifest.json'
 import { getAuthUser } from '@/lib/firebase/server-auth'
+import { searchStatus } from '@/lib/web'
+import { agentaStatus } from '@/lib/research/agenta'
+import { vikingStatus } from '@/lib/memory/viking'
+import { workspaceMode } from '@/lib/workspace/store'
 
 export const dynamic = 'force-dynamic'
 
@@ -28,6 +32,15 @@ export async function GET(req: NextRequest) {
     store: storeMode(),
     speech: speechStatus(),
     admin,
+    // The newer layers, each reported as "configured?" so a deployment can be
+    // checked from outside without reading any secrets.
+    services: {
+      search: searchStatus(),
+      research: agentaStatus(),
+      memory: vikingStatus(),
+      workspace: workspaceMode(),
+      computer: Boolean(process.env.E2B_API_KEY?.trim()),
+    },
     time: new Date().toISOString(),
   })
 }

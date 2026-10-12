@@ -15,34 +15,82 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
 import * as XLSX from 'xlsx'
 import { Sandbox } from '@e2b/code-interpreter'
-import { githubTargets, htmlToText, readGithub, readPage, safeFetch, webSearch } from '../web'
+import { githubTargets, htmlToText, readGithub, readPage, researchWeb, safeFetch, webSearch } from '../web'
+import { MIME, mimeOf } from '../workspace/mime'
+import {
+  deleteWorkspaceFile,
+  listWorkspaceFiles,
+  readWorkspaceFile,
+  writeWorkspaceFile,
+  WS_MAX_FILE,
+  WS_MAX_FILES,
+  WS_MAX_TOTAL,
+} from '../workspace/store'
 
-const MAX_FILE = 5 * 1024 * 1024
-const MAX_TOTAL = 12 * 1024 * 1024
-const MAX_FILES = 24
+const MAX_FILE = WS_MAX_FILE
+const MAX_TOTAL = WS_MAX_TOTAL
+const MAX_FILES = WS_MAX_FILES
 
 export type Block = string | { type?: 'h1' | 'h2' | 'p' | 'li'; text: string }
 
-export const MIME: Record<string, string> = {
-  txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', html: 'text/html',
-  pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', svg: 'image/svg+xml',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-}
+export { MIME }
 
 export class Workspace {
   readonly dir: string
   private total = 0
   private box: Sandbox | null = null
+  /** The student this workspace belongs to; null for an anonymous, throwaway run. */
+  private ownerId: string | null = null
+  /** Files that exist in the student's cloud workspace but have no local copy. */
+  private remote = new Map<string, number>()
+  /** Files written in this run that still have to be saved back to the cloud. */
+  private dirty = new Set<string>()
 
   private constructor(dir: string) {
     this.dir = dir
   }
 
-  static async create(): Promise<Workspace> {
+  /**
+   * A fresh working directory for one run — hydrated with the student's saved files
+   * when an owner is given, so a task can continue yesterday's work.
+   */
+  static async create(options: { ownerId?: string | null } = {}): Promise<Workspace> {
     const dir = path.join(tmpdir(), 'bodha-agent', randomUUID())
     await fs.mkdir(dir, { recursive: true })
-    return new Workspace(dir)
+    const ws = new Workspace(dir)
+    if (options.ownerId) {
+      ws.ownerId = options.ownerId
+      // Best-effort: a storage hiccup must never stop a task from running.
+      await ws.hydrate().catch(err => console.warn('[workspace] could not load saved files:', (err as Error).message))
+    }
+    return ws
+  }
+
+  /** Pulls the student's saved files into this run's working directory. */
+  private async hydrate(): Promise<void> {
+    if (!this.ownerId) return
+    const files = await listWorkspaceFiles(this.ownerId)
+    for (const f of files) {
+      this.remote.set(f.name, f.size)
+      this.total += f.size
+    }
+    // Only the reasonably sized files are copied eagerly; anything larger is
+    // fetched on demand by read(), so starting a task stays fast.
+    let budget = MAX_TOTAL
+    await Promise.all(
+      files
+        .filter(f => f.size <= 3 * 1024 * 1024)
+        .slice(0, MAX_FILES)
+        .map(async f => {
+          if (budget <= 0) return
+          const got = await readWorkspaceFile(this.ownerId!, f.name).catch(() => null)
+          if (!got) return
+          budget -= got.bytes.length
+          const target = path.join(this.dir, f.name)
+          await fs.mkdir(path.dirname(target), { recursive: true })
+          await fs.writeFile(target, got.bytes)
+        }),
+    )
   }
 
   /** Whether an isolated computer (E2B) is available for running code. */
@@ -59,6 +107,10 @@ export class Workspace {
   }
 
   /** Copy the workspace into the computer, run something, copy new/changed files back. */
+  /**
+   * Runs something on the computer. Anything the run changes comes back into the
+   * workspace, and is marked dirty so it is saved to the student's cloud workspace.
+   */
   private async onComputer(run: (box: Sandbox) => Promise<string>): Promise<string> {
     const box = await this.computer()
     const local = await this.list()
@@ -91,8 +143,63 @@ export class Workspace {
   }
 
   async destroy() {
+    // Save first: the run is over, so nothing may be lost with the folder.
+    await this.flush().catch(() => {})
     await this.box?.kill().catch(() => {})
     await fs.rm(this.dir, { recursive: true, force: true }).catch(() => {})
+  }
+
+  /* ─────────────────── persistence (the student's workspace) ─────────────────── */
+
+  /**
+   * Writes everything this run changed back to the student's workspace, in parallel.
+   * Called once before the run hands its files over — so a task's results are always
+   * there afterwards, even if the browser tab is closed on the spot.
+   */
+  async flush(): Promise<string[]> {
+    if (!this.ownerId || !this.dirty.size) return []
+    const owner = this.ownerId
+    const names = [...this.dirty]
+    this.dirty.clear()
+    const saved: string[] = []
+    await Promise.all(
+      names.map(async name => {
+        try {
+          const bytes = await fs.readFile(path.join(this.dir, name))
+          await writeWorkspaceFile(owner, name, bytes)
+          this.remote.set(name, bytes.length)
+          saved.push(name)
+        } catch (err) {
+          this.dirty.add(name)
+          console.warn('[workspace] could not save', name, '-', (err as Error).message)
+        }
+      }),
+    )
+    return saved
+  }
+
+  /** Deletes a file from this run and from the student's saved workspace. */
+  async remove(name: string): Promise<void> {
+    const clean = path.posix.normalize(String(name || '').replace(/\\/g, '/')).replace(/^\/+/, '')
+    await fs.rm(path.join(this.dir, clean), { force: true }).catch(() => {})
+    this.dirty.delete(clean)
+    this.remote.delete(clean)
+    if (this.ownerId) await deleteWorkspaceFile(this.ownerId, clean).catch(() => {})
+  }
+
+  /** Saves one file immediately (used when the student edits from the UI). */
+  async persist(name: string): Promise<boolean> {
+    if (!this.ownerId) return false
+    const clean = path.posix.normalize(String(name || '').replace(/\\/g, '/')).replace(/^\/+/, '')
+    try {
+      const bytes = await fs.readFile(path.join(this.dir, clean))
+      await writeWorkspaceFile(this.ownerId, clean, bytes)
+      this.dirty.delete(clean)
+      this.remote.set(clean, bytes.length)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** A path the agent names → a safe absolute path inside the workspace. */
@@ -117,7 +224,9 @@ export class Workspace {
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, data)
     this.total += data.length
-    return `${path.relative(this.dir, target).replace(/\\/g, '/')} (${data.length} bytes)`
+    const rel = path.relative(this.dir, target).replace(/\\/g, '/')
+    if (this.ownerId) this.dirty.add(rel)
+    return `${rel} (${data.length} bytes)`
   }
 
   async list(): Promise<Array<{ name: string; size: number }>> {
@@ -130,17 +239,32 @@ export class Workspace {
       }
     }
     await walk('')
-    return out
+    // Files the student saved earlier that this run has not had to open yet.
+    for (const [name, size] of this.remote) {
+      if (!out.some(f => f.name === name)) out.push({ name, size })
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name))
   }
 
   async read(name: string): Promise<{ name: string; mime: string; size: number; bytes: Buffer } | null> {
     try {
       const file = this.resolve(name)
       const bytes = await fs.readFile(file)
-      const ext = file.split('.').pop()?.toLowerCase() ?? ''
-      return { name: path.relative(this.dir, file).replace(/\\/g, '/'), mime: MIME[ext] ?? 'application/octet-stream', size: bytes.length, bytes }
+      return { name: path.relative(this.dir, file).replace(/\\/g, '/'), mime: mimeOf(file), size: bytes.length, bytes }
     } catch {
-      return null
+      // Not on disk yet — it may be one of the student's saved files. Fetch it once.
+      const clean = path.posix.normalize(String(name || '').replace(/\\/g, '/')).replace(/^\/+/, '')
+      if (!this.ownerId || !this.remote.has(clean)) return null
+      const got = await readWorkspaceFile(this.ownerId, clean).catch(() => null)
+      if (!got) return null
+      try {
+        const target = path.join(this.dir, clean)
+        await fs.mkdir(path.dirname(target), { recursive: true })
+        await fs.writeFile(target, got.bytes)
+      } catch {
+        /* still return the bytes even if the cache write failed */
+      }
+      return { name: clean, mime: mimeOf(clean), size: got.bytes.length, bytes: got.bytes }
     }
   }
 
@@ -175,6 +299,14 @@ export class Workspace {
         const results = await webSearch(String(a.query))
         if (!results.length) throw new Error('the search returned nothing')
         return results.map((r, i) => `${i + 1}. ${r.title} — ${r.url}\n${r.snippet}`).join('\n')
+      }
+      case 'research': {
+        // The deep path: Agenta's stored research agent reads several sources and
+        // writes a sourced note. Slow, so it fails soft and the fast search above
+        // is still there as the fallback.
+        const found = await researchWeb(String(a.query), { deadlineMs: 60_000 })
+        if (!found) throw new Error('the research agent did not answer — use search_web instead')
+        return `${found.text}${found.sources.length ? `\n\nSources: ${found.sources.join(', ')}` : ''}`.slice(0, 6_000)
       }
       case 'github': {
         const target = githubTargets(String(a.target).includes('github.com') ? String(a.target) : `github ${a.target}`)[0]

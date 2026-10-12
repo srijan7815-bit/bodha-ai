@@ -55,7 +55,28 @@ See [`.env.example`](.env.example) for the full list. The essentials:
 - **`FIREBASE_ADMIN_*`** — service-account credentials for server-side Firestore access
 - **`FISH_AUDIO_API_KEY`** — for TTS/STT ([fish.audio](https://fish.audio))
 - **`E2B_API_KEY`** — for the code sandbox ([e2b.dev](https://e2b.dev))
-- **`TAVILY_API_KEY`** — for web search ([tavily.com](https://tavily.com))
+- **`TAVILY_API_KEY`** — for web search, first engine ([tavily.com](https://tavily.com))
+- **`TINYFISH_API_KEY`** — web search, second engine, used when Tavily is out of credit ([tinyfish.ai](https://tinyfish.ai))
+- **`AGENTA_API_KEY`** — deep research through an Agenta research agent ([agenta.ai](https://agenta.ai))
+- **`OPENVIKING_URL` / `OPENVIKING_API_KEY`** — long-term memory about the student ([OpenViking](https://github.com/volcengine/OpenViking))
+
+### The computer, in the chat
+
+The **Computer** chip in the composer switches BODHA's computer on for the conversation.
+Task-shaped messages — *make a Word handout, run this code, download this and turn it
+into a PDF* — are then worked by the agent, step by step, and the answer arrives with the
+finished files. Every file it makes lands in the student's **workspace**, open from the
+folder button in the chat header or from the computer page: view, edit, save, rename,
+download, delete. The workspace is per student and persisted (Firestore), so the next task
+starts from the files the last one made.
+
+Ordinary questions are never handed to the computer — they keep their normal, fast path.
+Deep research requests go to the Agenta research agent; everything else searches Tavily
+first, then TinyFish, then a keyless fallback. Notes about the student are recalled from
+OpenViking before an answer and written back after it, off the critical path.
+
+Full details: [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md). Check every service at once:
+`node scripts/check-integrations.mjs`.
 
 ### Firestore security rules
 

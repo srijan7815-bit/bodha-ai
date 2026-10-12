@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowUp, AudioLines, BookMarked, BookOpen, Boxes, ChevronDown, FileText, Loader2, Mic, Paperclip, Plus, Square, X } from 'lucide-react'
+import { ArrowUp, AudioLines, BookMarked, BookOpen, Boxes, ChevronDown, FileText, FolderOpen, Loader2, Mic, Monitor, Paperclip, Plus, Square, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Dictation } from '@/lib/voice'
 import { BodhaMark } from '@/components/Brand'
@@ -28,6 +28,16 @@ interface ComposerProps {
   modelOptions?: Array<{ id: string; label: string }>
   modelValue?: string
   onModelChange?: (id: string) => void
+  /**
+   * The computer toggle: when it is on, task-shaped messages in this chat are
+   * worked by BODHA's computer — files, code, downloads — and everything it makes
+   * lands in the student's workspace. Ordinary questions still get ordinary answers.
+   */
+  computer?: boolean
+  onComputerChange?: (on: boolean) => void
+  /** Opens the workspace drawer (the files BODHA's computer has made). */
+  onOpenWorkspace?: () => void
+  workspaceCount?: number
   placeholder?: string
   hint?: boolean
 }
@@ -56,6 +66,10 @@ export default function Composer({
   modelOptions = [],
   modelValue,
   onModelChange,
+  computer = false,
+  onComputerChange,
+  onOpenWorkspace,
+  workspaceCount = 0,
   placeholder = 'Ask BODHA…',
   hint = true,
 }: ComposerProps) {
@@ -99,6 +113,9 @@ export default function Composer({
     { icon: BookOpen, label: 'Upload to Library', run: () => router.push('/library') },
     { icon: BookMarked, label: 'Knowledge Shelf', run: () => router.push('/iks') },
     { icon: Boxes, label: 'Code sandbox', run: () => router.push('/sandbox') },
+    ...(onOpenWorkspace
+      ? [{ icon: FolderOpen, label: workspaceCount ? `Workspace — ${workspaceCount} file${workspaceCount === 1 ? '' : 's'}` : 'Workspace files', run: onOpenWorkspace }]
+      : []),
   ]
 
   const activeModel = modelOptions.find(o => o.id === modelValue) ?? modelOptions[0]
@@ -181,6 +198,29 @@ export default function Composer({
               {modelOptions.length > 1 && <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" strokeWidth={2} />}
             </button>
           </div>
+
+          {/* computer toggle — off by default, remembered per student */}
+          {onComputerChange && (
+            <button
+              type="button"
+              onClick={() => onComputerChange(!computer)}
+              aria-pressed={computer}
+              aria-label={computer ? 'Turn BODHA’s computer off' : 'Turn BODHA’s computer on for this chat'}
+              title={
+                computer
+                  ? 'Computer is ON — tasks like “make a PDF”, “run this code” or “download this” are done in your workspace. Tap to turn off.'
+                  : 'Turn on BODHA’s computer: it can make files, run code and download things into your workspace.'
+              }
+              className={cn(
+                'inline-flex h-11 shrink-0 items-center gap-2 rounded-full pl-3 pr-3.5 text-[15px] transition-colors',
+                computer ? 'bg-primary/15 text-primary hover:bg-primary/20' : 'bg-foreground/[0.07] text-foreground/80 hover:bg-foreground/[0.11]',
+              )}
+            >
+              <Monitor className="h-[19px] w-[19px] shrink-0" strokeWidth={1.7} />
+              <span className="hidden sm:inline">Computer</span>
+              {computer && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-hidden />}
+            </button>
+          )}
 
           <div className="flex-1" />
 

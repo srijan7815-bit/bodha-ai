@@ -29,7 +29,8 @@ Tools:
 - list_files {}                        see what is in the workspace
 - download {url, path?}                download a public file (≤5 MB) into the workspace
 - read_url {url}                       read a web page as text
-- search_web {query}                   search the web
+- search_web {query}                   search the web (fast: Tavily → TinyFish)
+- research {query}                     deep research: a research agent reads several sources and writes a sourced note (slower; use when the task needs real sources, a report, or a comparison)
 - github {target}                      read a GitHub repo/file/profile ("owner/repo" or a github.com link)
 - make_pdf {path, title, blocks}       build a PDF; Latin text only — NEVER for Hindi/Sanskrit
 - make_docx {path, title, blocks}      build a Word file (works for Hindi)
@@ -89,13 +90,36 @@ async function think(messages: Array<{ role: string; content: string }>, signal?
 const summarise = (tool: string, a: Record<string, unknown>) =>
   tool === 'write_file' || tool === 'make_pdf' || tool === 'make_docx' || tool === 'make_xlsx' || tool === 'read_file' ? String(a.path ?? '')
     : tool === 'download' || tool === 'read_url' ? String(a.url ?? '')
-      : tool === 'search_web' ? String(a.query ?? '')
+      : tool === 'search_web' || tool === 'research' ? String(a.query ?? '')
         : tool === 'github' ? String(a.target ?? '')
           : ''
 
-export async function* runAgent(task: string, signal?: AbortSignal): AsyncGenerator<AgentFrame> {
+/**
+ * Does this message want BODHA's *computer* (a file, code, a download, real data)
+ * rather than an explanation? Used by the chat when the computer toggle is on, so
+ * an ordinary question still gets an ordinary — and fast — tutoring answer.
+ */
+export function looksLikeTask(text: string): boolean {
+  const t = text.trim()
+  if (/^\/(computer|agent|computer:)\b/i.test(t)) return true
+  if (/\b(use|with)\s+(your|the)\s+(computer|workspace)\b/i.test(t)) return true
+  const makes =
+    /\b(make|create|write|build|generate|produce|draft|prepare|design|convert|export|download|fetch|save|merge|split|extract|calculate|compute|plot|chart|graph|analyse|analyze|clean|summari[sz]e (this|the) (csv|data|file)|fill|format)\b/i.test(
+      t,
+    )
+  const artefacts =
+    /\b(pdf|word|docx|excel|xlsx|spreadsheet|csv|file|files|document|report|handout|worksheet|timetable|chart|graph|plot|dataset|table|slides|image|zip|folder|code|script|program|python|notebook)\b/i.test(
+      t,
+    )
+  const runsCode = /\b(run|execute)\b[^.?!]{0,40}\b(code|python|script|program)\b/i.test(t)
+  return (makes && artefacts) || runsCode
+}
+
+export async function* runAgent(task: string, signal?: AbortSignal, opts: { ownerId?: string } = {}): AsyncGenerator<AgentFrame> {
   await syncSystemState()
-  const ws = await Workspace.create()
+  // With an owner the agent continues the student's saved workspace; without one
+  // (the anonymous computer page) it is a throwaway folder, exactly as before.
+  const ws = await Workspace.create({ ownerId: opts.ownerId })
   const started = Date.now()
   const messages: Array<{ role: string; content: string }> = [
     { role: 'system', content: system() },
@@ -132,6 +156,9 @@ export async function* runAgent(task: string, signal?: AbortSignal): AsyncGenera
       if (action.tool === 'final') {
         const wanted = Array.isArray(args.files) ? (args.files as unknown[]).map(String) : []
         const names = wanted.length ? wanted : (await ws.list()).map(f => f.name)
+        // Save everything this run changed before handing it over, so the work is
+        // in the student's workspace even if they close the tab immediately.
+        await ws.flush().catch(() => {})
         const files: AgentFile[] = []
         let budget = 6 * 1024 * 1024
         for (const name of names.slice(0, 10)) {

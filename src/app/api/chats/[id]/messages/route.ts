@@ -1,10 +1,13 @@
 import { gatherWeb } from '@/lib/web'
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { z } from 'zod'
 import { retrieveForQuestion } from '@/lib/iks'
 import { getAuthUser } from '@/lib/firebase/server-auth'
 import { getStore } from '@/lib/store'
 import { streamTutorReply } from '@/lib/ai'
+import { memoryBlock, recallMemories, rememberTurn } from '@/lib/memory/viking'
+import { looksLikeTask, runAgent } from '@/lib/agent/run'
+import { listWorkspaceFiles } from '@/lib/workspace/store'
 import { blockedEndpointReason, customProviderConfig, normalizeBaseUrl } from '@/lib/ai/custom'
 import type { ProviderConfig } from '@/lib/ai/provider'
 import { BODHA_MODEL, migrateSettings } from '@/lib/types'
@@ -27,6 +30,12 @@ const bodySchema = z
     model: z.string().trim().max(120).optional(),
     /** Live Mode: the reply is spoken aloud, so keep it short and Markdown-free. */
     live: z.boolean().optional(),
+    /**
+     * The computer toggle in the composer. When it is on, task-shaped messages
+     * (make a file, run code, download, convert) go to BODHA's computer instead of
+     * the plain tutor — and everything it makes is saved in the student's workspace.
+     */
+    computer: z.boolean().optional(),
   })
   .refine(b => b.regenerate === true || (typeof b.content === 'string' && b.content.length > 0), {
     message: 'Message is empty',
@@ -84,10 +93,17 @@ export async function POST(req: NextRequest, { params }: Params) {
     : Promise.resolve(null)
   let shelfP!: ReturnType<typeof retrieveForQuestion>
   let webP!: ReturnType<typeof gatherWeb>
+  /**
+   * Memory recall (OpenViking) starts here, alongside everything else: it is
+   * hard-capped at 2.5 s and fails open, so it can never be the reason an answer
+   * is late — and it is never awaited on its own.
+   */
+  let memoriesP!: Promise<string[]>
   if (!isRegenerate) {
     const question = parsed.data.content ?? ''
     shelfP = retrieveForQuestion(question)
     webP = gatherWeb(question, { live: parsed.data.live })
+    memoriesP = recallMemories(user.id, question, { timeoutMs: 2_500, signal: req.signal }).catch(() => [])
   }
 
   // Save the student's message (or drop the old answer when regenerating)
@@ -138,12 +154,22 @@ export async function POST(req: NextRequest, { params }: Params) {
   // Read the Indian Knowledge Systems shelf for this question. Retrieved once,
   // before the model is called, so the answer can be grounded *and* attributed:
   // the same passages go into the prompt and onto the saved message.
+  const askedQuestion = isRegenerate
+    ? [...history].reverse().find(m => m.role === 'user')?.content ?? ''
+    : parsed.data.content ?? ''
   if (isRegenerate) {
-    const question = [...history].reverse().find(m => m.role === 'user')?.content ?? ''
-    shelfP = retrieveForQuestion(question)
-    webP = gatherWeb(question, { live: parsed.data.live })
+    shelfP = retrieveForQuestion(askedQuestion)
+    webP = gatherWeb(askedQuestion, { live: parsed.data.live })
+    memoriesP = recallMemories(user.id, askedQuestion, { timeoutMs: 2_500, signal: req.signal }).catch(() => [])
   }
-  const [shelf, web] = await Promise.all([shelfP, webP])
+  const [shelf, web, memories] = await Promise.all([shelfP, webP, memoriesP])
+
+  // The computer toggle: only task-shaped messages go to the computer, so ordinary
+  // questions keep their normal (and fast) tutoring path. Live Mode never does.
+  const useComputer = parsed.data.computer === true && !parsed.data.live && looksLikeTask(askedQuestion)
+
+  // Handed to after(): the memory write-back happens once the answer has been sent.
+  let answerForMemory = ''
 
   const encoder = new TextEncoder()
   const abortCtl = new AbortController()
@@ -163,12 +189,51 @@ export async function POST(req: NextRequest, { params }: Params) {
       try {
         if (!isRegenerate) send({ t: 'user', message: userMessage })
         if (!isRegenerate && shelf.sources.length) send({ t: 'sources', items: shelf.sources })
-        for await (const chunk of streamTutorReply({ history, document, preferred, iksContext: shelf.context, live: parsed.data.live, webContext: web.context, webNotice: web.notice }, abortCtl.signal)) {
-          if (chunk.kind === 'delta') {
-            full += chunk.text
-            send({ t: 'delta', v: chunk.text })
-          } else {
-            send({ t: 'notice', v: chunk.text })
+
+        if (useComputer) {
+          // ── The computer answers this one ──────────────────────────────────
+          // The student switched on the computer toggle and asked for a real
+          // artefact, so the agent does the work in their workspace. Its steps
+          // arrive as inline notices; its summary arrives as the answer; every
+          // file it makes is saved to the workspace the drawer can open.
+          send({ t: 'notice', v: 'Computer is on this task — working in your workspace…' })
+          let failed = false
+          for await (const frame of runAgent(askedQuestion, abortCtl.signal, { ownerId: user.id })) {
+            if (frame.t === 'step') send({ t: 'notice', v: `${frame.tool}${frame.summary ? `: ${frame.summary}` : ''}` })
+            else if (frame.t === 'result' && !frame.ok) send({ t: 'notice', v: `↳ ${frame.output.slice(0, 160)}` })
+            else if (frame.t === 'final') {
+              if (frame.message) {
+                full += frame.message
+                send({ t: 'delta', v: frame.message })
+              }
+            } else if (frame.t === 'error') {
+              failed = true
+              send({ t: 'notice', v: frame.message })
+            }
+          }
+          const saved = failed ? [] : await listWorkspaceFiles(user.id).catch(() => [])
+          if (saved.length) send({ t: 'files', items: saved.slice(0, 12).map(f => ({ name: f.name, size: f.size, mime: f.mime })) })
+          if (failed && !full.trim()) {
+            // The computer could not do it — answer as a tutor would instead of
+            // leaving the student with an error and nothing else.
+            for await (const chunk of streamTutorReply(
+              { history, document, preferred, iksContext: shelf.context, live: parsed.data.live, webContext: web.context, memories: memoryBlock(memories), computer: true },
+              abortCtl.signal,
+            )) {
+              if (chunk.kind === 'delta') {
+                full += chunk.text
+                send({ t: 'delta', v: chunk.text })
+              } else send({ t: 'notice', v: chunk.text })
+            }
+          }
+        } else {
+          for await (const chunk of streamTutorReply({ history, document, preferred, iksContext: shelf.context, live: parsed.data.live, webContext: web.context, webNotice: web.notice, memories: memoryBlock(memories), computer: parsed.data.computer === true }, abortCtl.signal)) {
+            if (chunk.kind === 'delta') {
+              full += chunk.text
+              send({ t: 'delta', v: chunk.text })
+            } else {
+              send({ t: 'notice', v: chunk.text })
+            }
           }
         }
       } catch (err) {
@@ -180,6 +245,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       }
 
       // Persist whatever BODHA managed to say (even partial, if content arrived)
+      answerForMemory = full
       if (full.trim()) {
         try {
           const assistantMessage = await store.createMessage(
@@ -203,6 +269,20 @@ export async function POST(req: NextRequest, { params }: Params) {
     cancel() {
       abortCtl.abort()
     },
+  })
+
+  /**
+   * Memory write-back runs AFTER the answer has been streamed, so the student
+   * never waits for it. `after()` keeps the function alive for it on Vercel,
+   * which a bare floating promise would not survive.
+   */
+  after(async () => {
+    try {
+      if (answerForMemory.trim().length < 60) return
+      await rememberTurn(user.id, askedQuestion, answerForMemory)
+    } catch {
+      /* memory is a bonus, never a failure the student should see */
+    }
   })
 
   return new Response(stream, {

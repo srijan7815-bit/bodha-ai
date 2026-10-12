@@ -1,11 +1,12 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowUp, Check, Download, FileText, Loader2, Monitor, Square, X } from 'lucide-react'
+import { ArrowUp, Check, Download, FileText, FolderOpen, Loader2, Monitor, Square, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { authFetch } from '@/lib/firebase/client-token'
 import AppShell from '@/components/AppShell'
+import WorkspaceDrawer from '@/components/WorkspaceDrawer'
 
 interface Step {
   n: number
@@ -60,6 +61,24 @@ export default function ComputerPage() {
   )
 }
 
+/** The folder button in the header: opens the student's saved workspace. */
+function WorkspaceButton({ onOpen, count }: { onOpen: () => void; count: number }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="relative inline-flex h-10 items-center gap-1.5 rounded-full border border-border/70 bg-surface px-3 text-ui-sm text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+      title="Your workspace — every file the computer has made, to open, edit, download or delete"
+    >
+      <FolderOpen className="h-4 w-4" strokeWidth={1.7} />
+      Workspace
+      {count > 0 && (
+        <span className="rounded-full bg-primary/12 px-1.5 text-[11px] font-medium text-primary">{count}</span>
+      )}
+    </button>
+  )
+}
+
 function ComputerWorkspace() {
   const [task, setTask] = useState('')
   const [busy, setBusy] = useState(false)
@@ -69,6 +88,24 @@ function ComputerWorkspace() {
   const [error, setError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
+  /** The saved workspace (every file the computer has ever made for this student). */
+  const [wsOpen, setWsOpen] = useState(false)
+  const [wsCount, setWsCount] = useState(0)
+
+  const refreshWs = async () => {
+    try {
+      const res = await authFetch('/api/workspace')
+      if (!res.ok) return
+      const data = await res.json()
+      setWsCount((data.files ?? []).length)
+    } catch {
+      /* the drawer reports its own errors */
+    }
+  }
+
+  useEffect(() => {
+    void refreshWs()
+  }, [])
 
   async function run(text = task) {
     const clean = text.trim()
@@ -109,6 +146,8 @@ function ComputerWorkspace() {
           else if (f.t === 'final') {
             setMessage(f.message)
             setFiles(f.files ?? [])
+            // Everything this run made has just been saved to the workspace.
+            void refreshWs()
           } else if (f.t === 'error') setError(f.message)
           setTimeout(() => endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), 50)
         }
@@ -128,9 +167,12 @@ function ComputerWorkspace() {
           <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
             <Monitor className="h-5 w-5" strokeWidth={1.6} />
           </span>
-          <div>
+          <div className="min-w-0">
             <h1 className="font-display text-[1.6rem] font-semibold leading-tight tracking-[-0.02em]">BODHA’s Computer</h1>
-            <p className="text-ui text-muted-foreground">Give it a task. It works in its own private workspace and hands you the files.</p>
+            <p className="text-ui text-muted-foreground">Give it a task. It works in your own private workspace and hands you the files.</p>
+          </div>
+          <div className="ml-auto shrink-0">
+            <WorkspaceButton onOpen={() => setWsOpen(true)} count={wsCount} />
           </div>
         </div>
 
@@ -223,6 +265,15 @@ function ComputerWorkspace() {
         )}
         <div ref={endRef} />
       </div>
+
+      <WorkspaceDrawer
+        open={wsOpen}
+        onClose={() => {
+          setWsOpen(false)
+          void refreshWs()
+        }}
+        onChange={list => setWsCount(list.length)}
+      />
     </div>
   )
 }

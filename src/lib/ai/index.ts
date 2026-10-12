@@ -43,6 +43,10 @@ export interface TutorContext {
   /** Pages, GitHub and search results fetched for this question. */
   webContext?: string | null
   webNotice?: string | null
+  /** Durable notes about this student, recalled from OpenViking for this question. */
+  memories?: string | null
+  /** True when the student has switched BODHA's computer on for this chat. */
+  computer?: boolean
 }
 
 const PRETTY: Record<string, string> = {
@@ -78,6 +82,8 @@ export async function* streamTutorReply(ctx: TutorContext, signal?: AbortSignal)
     iksContext: ctx.iksContext,
     live: ctx.live,
     webContext: ctx.webContext,
+    memories: ctx.memories,
+    computer: ctx.computer,
   })
 
   // Live Mode speaks two-to-five sentence replies; eight turns of conversation
